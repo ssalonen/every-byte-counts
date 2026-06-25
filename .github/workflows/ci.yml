@@ -33,12 +33,10 @@ jobs:
           sudo xcode-select -s "$(ls -d /Applications/Xcode*.app | sort -V | tail -1)"
           swift --version
 
-      - name: Cache SwiftPM build
-        uses: actions/cache@v5
-        with:
-          path: .build
-          key: ${{ runner.os }}-spm-build-${{ hashFiles('Package.swift', 'Sources/**/*.swift', 'Tests/**/*.swift') }}
-          restore-keys: ${{ runner.os }}-spm-build-
+      # No .build cache here on purpose: a restored cache can carry a stale or
+      # half-merged default.profdata, which makes coverage export fail with
+      # "invalid instrumentation profile data (bad magic)". A clean build of this
+      # small package costs ~1 min and guarantees a valid, current profile.
 
       - name: Run unit tests with coverage
         run: |
@@ -49,19 +47,20 @@ jobs:
 
       - name: Export & gate coverage
         run: |
-          set -o pipefail
-          # Canonical path to the merged profdata; fall back to a search.
-          PROFDATA=$(swift test --show-codecov-path 2>/dev/null || true)
-          [ -f "$PROFDATA" ] || PROFDATA=$(find .build -name '*.profdata' | head -1)
-          # The xctest bundle's executable (no -perm: not portable on BSD find).
-          BIN=$(find .build -type f -path '*PackageTests.xctest/Contents/MacOS/*' | head -1)
-          [ -n "$BIN" ] || BIN=$(find .build -type f -name '*PackageTests' ! -name '*.json' | head -1)
-          if [ ! -f "$PROFDATA" ] || [ -z "$BIN" ]; then
-            echo "Could not locate coverage profdata ($PROFDATA) or test binary ($BIN)" >&2
+          set -euo pipefail
+          # Deterministic paths from the build dir — no --show-codecov-path (it
+          # re-exports and trips over any stale profile in the build tree).
+          BIN_DIR=$(swift build --show-bin-path)
+          PROFDATA="$BIN_DIR/codecov/default.profdata"
+          XCTEST=$(find "$BIN_DIR" -maxdepth 1 -name '*.xctest' | head -1)
+          TESTBIN="$XCTEST/Contents/MacOS/$(basename "$XCTEST" .xctest)"
+          if [ ! -f "$PROFDATA" ] || [ ! -f "$TESTBIN" ]; then
+            echo "Missing profdata ($PROFDATA) or test binary ($TESTBIN)" >&2
+            ls -la "$BIN_DIR/codecov" 2>/dev/null || true
             exit 1
           fi
           xcrun llvm-cov export \
-            -instr-profile "$PROFDATA" "$BIN" \
+            -instr-profile "$PROFDATA" "$TESTBIN" \
             -ignore-filename-regex='(Tests/|\.build/|InterfaceCounterReader\.swift)' \
             > coverage.json
 
