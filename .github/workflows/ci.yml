@@ -41,14 +41,23 @@ jobs:
           restore-keys: ${{ runner.os }}-spm-build-
 
       - name: Run unit tests with coverage
-        run: swift test --enable-code-coverage 2>&1 | tee /tmp/swift-test.log
+        run: |
+          # pipefail is essential: without it the exit code is tee's (0) and a
+          # test/compile failure would be silently swallowed.
+          set -o pipefail
+          swift test --enable-code-coverage 2>&1 | tee /tmp/swift-test.log
 
       - name: Export & gate coverage
         run: |
-          PROFDATA=$(find .build -name '*.profdata' | head -1)
-          BIN=$(find .build -path '*PackageTests.xctest/Contents/MacOS/*' -type f -perm +111 | head -1)
-          if [ -z "$PROFDATA" ] || [ -z "$BIN" ]; then
-            echo "Could not locate coverage profdata or test binary" >&2
+          set -o pipefail
+          # Canonical path to the merged profdata; fall back to a search.
+          PROFDATA=$(swift test --show-codecov-path 2>/dev/null || true)
+          [ -f "$PROFDATA" ] || PROFDATA=$(find .build -name '*.profdata' | head -1)
+          # The xctest bundle's executable (no -perm: not portable on BSD find).
+          BIN=$(find .build -type f -path '*PackageTests.xctest/Contents/MacOS/*' | head -1)
+          [ -n "$BIN" ] || BIN=$(find .build -type f -name '*PackageTests' ! -name '*.json' | head -1)
+          if [ ! -f "$PROFDATA" ] || [ -z "$BIN" ]; then
+            echo "Could not locate coverage profdata ($PROFDATA) or test binary ($BIN)" >&2
             exit 1
           fi
           xcrun llvm-cov export \

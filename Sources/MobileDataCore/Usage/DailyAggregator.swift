@@ -39,7 +39,8 @@ public struct DailyAggregator {
             }
         }
 
-        let totals = cellularByDay.keys.union(wifiByDay.keys).map { day in
+        let allDays = Set(cellularByDay.keys).union(wifiByDay.keys)
+        let totals = allDays.map { day in
             DailyTotal(
                 date: day,
                 cellular: DataSize(bytes: UInt64(max(0, cellularByDay[day] ?? 0).rounded())),
