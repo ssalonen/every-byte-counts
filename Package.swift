@@ -13,7 +13,12 @@ import PackageDescription
 let package = Package(
     name: "MobileDataCore",
     platforms: [
-        .iOS(.v17)
+        // iOS is the product target; macOS is declared so the dependency-free
+        // logic can be unit-tested with `swift test` directly on a Mac/CI host
+        // (no simulator needed). Only InterfaceCounterReader is Darwin-specific
+        // and it compiles on both.
+        .iOS(.v17),
+        .macOS(.v13)
     ],
     products: [
         .library(name: "MobileDataCore", targets: ["MobileDataCore"])

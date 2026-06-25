@@ -1,0 +1,24 @@
+{
+  "name": "Every Byte Counts",
+  "identifier": "fi.mailhub.everybytecounts.source",
+  "sourceURL": "https://raw.githubusercontent.com/ssalonen/every-byte-counts/main/altstore-source.json",
+  "apps": [
+    {
+      "name": "Every Byte Counts",
+      "bundleIdentifier": "fi.mailhub.everybytecounts",
+      "developerName": "ssalonen",
+      "subtitle": "Track cellular data against your monthly cap",
+      "localizedDescription": "Track your cellular data usage against a monthly quota — no VPN, no login, no carrier account.\n\nFeatures:\n• Data used / remaining / % consumed / days left\n• Day-by-day and month-by-month history\n• Recency-weighted forecast: a remaining daily budget and projected end-of-cycle total\n• Estimated euro cost of any overage\n• Threshold alerts (50 / 80 / 100%)\n• Home Screen and Lock Screen widgets\n\nFigures are an on-device estimate from the system interface counters and may differ a few percent from your carrier's billing.",
+      "iconURL": "https://raw.githubusercontent.com/ssalonen/every-byte-counts/main/icon.png",
+      "tintColor": "34C759",
+      "category": "utilities",
+      "version": "0.0.0",
+      "versionDate": "2026-06-25T00:00:00+00:00",
+      "versionDescription": "Initial source. No release published yet.",
+      "downloadURL": "",
+      "size": 0,
+      "versions": []
+    }
+  ],
+  "news": []
+}

@@ -51,6 +51,40 @@ final class MobileDataServiceTests: XCTestCase {
         XCTAssertEqual(store.load().plan.capGB, 50)
     }
 
+    func testReportOnFreshStoreIsAllZerosNotACrash() {
+        // Before any sample, report() must return a sane zeroed snapshot.
+        let service = makeService(MockCounterReader(), store: InMemoryDataStore(
+            AppState(plan: PlanConfig(capGB: 20, cycleResetDay: 1))))
+        let report = service.report(asOf: TestDates.date(2026, 3, 15, 12))
+
+        XCTAssertEqual(report.summary.used, .zero)
+        XCTAssertEqual(report.summary.remaining.bytes, 20_000_000_000)
+        XCTAssertTrue(report.dailyTotals.isEmpty)
+        XCTAssertEqual(report.forecast.status, .safe)
+        XCTAssertEqual(report.forecast.projectedExcessGB, 0)
+    }
+
+    func testCycleHistoryEmptyUntilACycleCloses() {
+        let store = InMemoryDataStore(AppState(plan: PlanConfig(capGB: 20, cycleResetDay: 1)))
+        let service = makeService(MockCounterReader(), store: store)
+        service.sample(now: TestDates.date(2026, 3, 1, 9))   // opens, never closes
+        XCTAssertTrue(service.cycleHistory().isEmpty)
+    }
+
+    func testCurrentStateExposesPlan() {
+        let store = InMemoryDataStore(AppState(plan: PlanConfig(capGB: 33, cycleResetDay: 1)))
+        let service = makeService(MockCounterReader(), store: store)
+        XCTAssertEqual(service.currentState().plan.capGB, 33)
+    }
+
+    #if canImport(Darwin)
+    func testLiveFactoryReturnsNilWithoutAppGroupEntitlement() {
+        // No App Group container is provisioned in the test host, so the live
+        // factory must fail gracefully rather than force-unwrap.
+        XCTAssertNil(MobileDataService.live(appGroupIdentifier: "group.does.not.exist"))
+    }
+    #endif
+
     func testForecastIncludedInReport() {
         let store = InMemoryDataStore(AppState(plan: PlanConfig(capGB: 20, cycleResetDay: 1)))
         let reader = MockCounterReader(cellular: 0)

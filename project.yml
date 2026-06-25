@@ -43,6 +43,7 @@ targets:
       - package: MobileDataCore
         product: MobileDataCore
       - target: EveryByteCountsWidgetExtension
+    scheme: {}
 
   EveryByteCountsWidgetExtension:
     type: app-extension

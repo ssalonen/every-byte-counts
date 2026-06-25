@@ -72,6 +72,24 @@ final class SamplingEngineTests: XCTestCase {
         XCTAssertEqual(state.currentCycle?.baselineCumulativeCellular.bytes, 10 * GB)
     }
 
+    func testGapSpanningMultipleCyclesClosesOnlyTheOpenOne() {
+        // Documented limitation: if the app/widget never samples for >1 cycle,
+        // intermediate cycles have no data and are not reconstructed. The open
+        // cycle closes and a new one opens for "now"; skipped months are absent.
+        let store = InMemoryDataStore(AppState(plan: PlanConfig(capGB: 20, cycleResetDay: 1)))
+        let reader = MockCounterReader(cellular: 0)
+        let engine = makeEngine(reader, store: store)
+
+        engine.sample(now: TestDates.date(2026, 3, 5, 10))   // open March cycle
+        reader.add(cellular: 6 * GB)
+        engine.sample(now: TestDates.date(2026, 5, 20, 10))  // jump to May (skips April)
+
+        let state = store.load()
+        XCTAssertEqual(state.closedCycles.count, 1, "only the previously-open cycle closes")
+        XCTAssertEqual(state.closedCycles.first?.start, TestDates.date(2026, 3, 1, 0, 0))
+        XCTAssertEqual(state.currentCycle?.start, TestDates.date(2026, 5, 1, 0, 0))
+    }
+
     func testAlertsFireDuringSampling() {
         let store = InMemoryDataStore(AppState(plan: PlanConfig(capGB: 10, cycleResetDay: 1, alertThresholds: [0.5, 0.8])))
         let reader = MockCounterReader(cellular: 0)
@@ -85,6 +103,47 @@ final class SamplingEngineTests: XCTestCase {
         // Re-sampling without more usage does not refire.
         let again = engine.sample(now: TestDates.date(2026, 3, 2, 11))
         XCTAssertTrue(again?.pendingAlerts.isEmpty ?? false)
+    }
+
+    func testWifiTrackedSeparatelyAndDoesNotAffectCellular() {
+        let store = InMemoryDataStore(AppState(plan: PlanConfig(capGB: 20, cycleResetDay: 1)))
+        let reader = MockCounterReader(cellular: 0, wifi: 0)
+        let engine = makeEngine(reader, store: store)
+
+        engine.sample(now: TestDates.date(2026, 3, 1, 10))
+        reader.add(cellular: 1 * GB, wifi: 9 * GB)   // lots of WiFi, little cellular
+        let result = engine.sample(now: TestDates.date(2026, 3, 1, 12))
+
+        // WiFi is accumulated for context but the metered cellular figure ignores it.
+        XCTAssertEqual(result?.snapshot.cumulativeCellular.bytes, 1 * GB)
+        XCTAssertEqual(result?.snapshot.cumulativeWifi.bytes, 9 * GB)
+    }
+
+    func testRebootOnEitherInterfaceIsFlagged() {
+        let store = InMemoryDataStore(AppState(plan: PlanConfig(capGB: 20, cycleResetDay: 1)))
+        let reader = MockCounterReader(cellular: 2 * GB, wifi: 2 * GB)
+        let engine = makeEngine(reader, store: store)
+
+        engine.sample(now: TestDates.date(2026, 3, 1, 10))
+        // Cellular keeps climbing, but WiFi counter drops (a reboot signature on
+        // one interface). The pass must be flagged as a reboot.
+        reader.cellular = 3 * GB
+        reader.wifi = 100              // dropped below previous → reboot
+        let result = engine.sample(now: TestDates.date(2026, 3, 1, 12))
+        XCTAssertTrue(result?.didReboot ?? false)
+        // First sample zeroed both cumulatives (no pre-sample backfill). Cellular
+        // then climbs 2→3 GB (+1 GB); WiFi rebooted so only its post-reboot 100 B
+        // counts. Cumulatives: cellular 1 GB, wifi 100 B.
+        XCTAssertEqual(result?.snapshot.cumulativeCellular.bytes, 1 * GB)
+        XCTAssertEqual(result?.snapshot.cumulativeWifi.bytes, 100)
+    }
+
+    func testFirstSampleHasNoAttributionTagByDefault() {
+        let store = InMemoryDataStore(AppState(plan: PlanConfig(capGB: 20, cycleResetDay: 1)))
+        let engine = makeEngine(MockCounterReader(cellular: GB), store: store)
+        let result = engine.sample(now: TestDates.date(2026, 3, 1, 10))
+        XCTAssertNil(result?.snapshot.attribution, "MVP leaves the roaming hook unset")
+        XCTAssertTrue(result?.didRolloverCycle ?? false, "first sample opens the first cycle")
     }
 
     func testReadFailureLeavesStateUntouched() {

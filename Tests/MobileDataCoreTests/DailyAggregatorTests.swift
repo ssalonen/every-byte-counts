@@ -45,6 +45,26 @@ final class DailyAggregatorTests: XCTestCase {
         XCTAssertEqual(fractions.count, 4) // spans days 10,11,12,13
     }
 
+    func testDayFractionsHandlesNonPositiveInterval() {
+        // Two snapshots with the same timestamp (clock didn't move) must not
+        // divide by zero — the whole delta lands on that single day.
+        let t = TestDates.date(2026, 3, 10, 9)
+        let fractions = agg.dayFractions(from: t, to: t)
+        XCTAssertEqual(fractions.count, 1)
+        XCTAssertEqual(fractions[0].fraction, 1.0, accuracy: 1e-9)
+        XCTAssertEqual(fractions[0].day, TestDates.date(2026, 3, 10, 0, 0))
+    }
+
+    func testZeroDeltaSnapshotsProduceNoDays() {
+        // Sampling can fire with no traffic in between; that must not create a
+        // phantom zero-byte day entry.
+        let snaps = [
+            snapshot(TestDates.date(2026, 3, 10, 9), cumulative: GB),
+            snapshot(TestDates.date(2026, 3, 10, 17), cumulative: GB)
+        ]
+        XCTAssertTrue(agg.dailyTotals(from: snaps).isEmpty)
+    }
+
     func testFewerThanTwoSnapshotsYieldsNothing() {
         XCTAssertTrue(agg.dailyTotals(from: []).isEmpty)
         XCTAssertTrue(agg.dailyTotals(from: [snapshot(TestDates.date(2026, 3, 10), cumulative: 0)]).isEmpty)

@@ -122,9 +122,41 @@ Simulator.)
 `MobileDataCore` ships an XCTest suite covering the pieces that carry risk:
 reboot detection, billing-cycle boundaries (incl. short months), daily delta
 splitting across midnight, recency-weighted forecasting, the cost strategies,
-alert dedup/reset, and full sampling-engine scenarios (first sample, deltas,
-reboot mid-cycle, cycle rollover, alert firing, pruning) — all driven by a mock
-counter reader, so they run on any Swift toolchain.
+alert dedup/reset, persistence round-trips, and full sampling-engine scenarios
+(first sample, deltas, reboot mid-cycle, cycle rollover, multi-cycle gaps, alert
+firing, pruning) — all driven by a mock counter reader, so they run on any Swift
+toolchain.
+
+A lead-QE review of *whether those tests assert the right things* — plus the
+substantive correctness findings it surfaced (notably the iOS 32-bit counter
+wrap) — is in [`docs/TEST-ASSESSMENT.md`](docs/TEST-ASSESSMENT.md).
+
+---
+
+## CI/CD & releases
+
+GitHub Actions (`.github/workflows/`), adapted from `ssalonen/unarchiver`:
+
+| Workflow | What it does |
+|----------|--------------|
+| `ci.yml` | Runs `swift test --enable-code-coverage` on the core, **gates line coverage ≥ 95%**, posts a coverage table on PRs; builds the app + widget (XcodeGen → `xcodebuild`) against the iOS Simulator SDK; on green `main`, auto-computes the next version from **Conventional Commits** and triggers a release. |
+| `release.yml` | Builds an ad-hoc-signed IPA, updates `altstore-source.json`, and publishes a GitHub Release. Reusable via `workflow_call`. |
+| `bump-version.yml` | Manual `workflow_dispatch` (patch/minor/major) — the first-release escape hatch. |
+| `security.yml` | CodeQL (Swift, `security-extended`), a supply-chain guard that keeps the core dependency-free, and PR dependency review. |
+
+**SideStore / AltStore:** releases publish an IPA and refresh
+[`altstore-source.json`](altstore-source.json). Add this source URL in
+SideStore/AltStore to get automatic updates:
+
+```
+https://raw.githubusercontent.com/ssalonen/every-byte-counts/main/altstore-source.json
+```
+
+Conventional Commits drive the auto-release: `feat:` → minor, `fix:`/`perf:` →
+patch, `feat!:`/`BREAKING CHANGE:` → major; `chore/docs/test/ci`-only pushes
+publish nothing (which also stops the release bot's own source-update commit from
+looping). Since the existing history isn't in Conventional-Commit form, the
+**first** release is cut by running the *Bump version* workflow manually.
 
 ---
 
