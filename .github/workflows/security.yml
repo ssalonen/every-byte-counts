@@ -25,20 +25,24 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Initialize CodeQL
-        uses: github/codeql-action/init@v4
-        with:
-          languages: swift
-          queries: security-extended
-
       - name: Select Xcode
         run: sudo xcode-select -s "$(ls -d /Applications/Xcode*.app | sort -V | tail -1)"
 
+      # Install xcodegen and generate the project BEFORE codeql init. After init,
+      # CodeQL injects an x86_64 libtrace via DYLD_INSERT_LIBRARIES into every
+      # step, which makes arm64 `brew` abort with "Cannot install under Rosetta 2".
+      # Only the actual compile needs to be traced, so set the project up first.
       - name: Install XcodeGen
         run: brew install xcodegen
 
       - name: Generate Xcode project
         run: xcodegen generate
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: swift
+          queries: security-extended
 
       - name: Build (for CodeQL)
         run: |

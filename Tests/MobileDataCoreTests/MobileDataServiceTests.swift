@@ -77,11 +77,14 @@ final class MobileDataServiceTests: XCTestCase {
         XCTAssertEqual(service.currentState().plan.capGB, 33)
     }
 
-    #if canImport(Darwin)
-    func testLiveFactoryReturnsNilWithoutAppGroupEntitlement() {
-        // No App Group container is provisioned in the test host, so the live
-        // factory must fail gracefully rather than force-unwrap.
-        XCTAssertNil(MobileDataService.live(appGroupIdentifier: "group.does.not.exist"))
+    #if os(macOS)
+    func testLiveFactoryBuildsUsableServiceWhenContainerResolves() {
+        // On macOS the App Group container resolves *without* an entitlement
+        // (unlike iOS, where it returns nil without one), so the live factory
+        // returns a usable service here — which exercises the real wiring path.
+        let service = MobileDataService.live(appGroupIdentifier: AppConstants.appGroupIdentifier)
+        XCTAssertNotNil(service)
+        XCTAssertNotNil(service?.report())   // load → summarise → forecast must work
     }
     #endif
 
