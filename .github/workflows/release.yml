@@ -71,7 +71,13 @@ jobs:
         run: brew install xcodegen
 
       - name: Generate Xcode project
-        run: xcodegen generate
+        run: |
+          # Stamp the version into project.yml before generation so that
+          # MARKETING_VERSION is baked into the project settings; the
+          # ProcessInfoPlistFile build phase then expands $(MARKETING_VERSION)
+          # from the project rather than relying on a command-line override.
+          sed -i "" "s/MARKETING_VERSION: \"[^\"]*\"/MARKETING_VERSION: \"${VERSION_NUM}\"/" project.yml
+          xcodegen generate
 
       - name: Build archive (ad-hoc signed)
         run: |
@@ -83,9 +89,23 @@ jobs:
             -archivePath "$RUNNER_TEMP/EveryByteCounts.xcarchive" \
             CODE_SIGN_IDENTITY="-" \
             AD_HOC_CODE_SIGNING_ALLOWED=YES \
-            DEVELOPMENT_TEAM="" \
-            MARKETING_VERSION="${VERSION_NUM}" \
-            CURRENT_PROJECT_VERSION="${VERSION_NUM}"
+            DEVELOPMENT_TEAM=""
+
+      - name: Verify IPA version
+        run: |
+          unzip -p "$RUNNER_TEMP/EveryByteCounts.ipa" "Payload/EveryByteCounts.app/Info.plist" \
+            | plutil -convert xml1 -o - - \
+            | python3 -c "
+          import sys, plistlib
+          pl = plistlib.load(sys.stdin.buffer)
+          found = pl.get('CFBundleShortVersionString', '(missing)')
+          import os; expected = os.environ['VERSION_NUM']
+          print(f'IPA version: {found}')
+          if found != expected:
+              print(f'ERROR: expected {expected}, got {found}', file=sys.stderr)
+              raise SystemExit(1)
+          print('Version OK')
+          "
 
       - name: Package IPA
         run: |
