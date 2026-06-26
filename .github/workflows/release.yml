@@ -142,7 +142,7 @@ jobs:
           print(f"Updated source to {version_num} ({ipa_size} bytes)")
           PYEOF
 
-      - name: Commit updated source JSON
+      - name: Commit updated source JSON and project version
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -150,13 +150,15 @@ jobs:
           git fetch origin main
           git checkout main
           cp "$RUNNER_TEMP/altstore-source.json" altstore-source.json
-          git add altstore-source.json
+          # Keep project.yml in sync so local builds produce the right version
+          sed -i "" "s/MARKETING_VERSION: \"[^\"]*\"/MARKETING_VERSION: \"${VERSION_NUM}\"/" project.yml
+          git add altstore-source.json project.yml
           if git diff --cached --quiet; then
-            echo "No changes to altstore-source.json"
+            echo "No changes to commit"
           else
             # [skip ci] avoids a needless macOS run; a lone chore commit is
             # non-releasable anyway so it could never trigger another release.
-            git commit -m "chore: update AltStore source for ${TAG} [skip ci]"
+            git commit -m "chore: update AltStore source and version for ${TAG} [skip ci]"
             git push origin HEAD:main
           fi
 
