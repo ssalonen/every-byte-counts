@@ -1,0 +1,292 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+# Target line coverage for the MobileDataCore package. The job fails below this.
+# InterfaceCounterReader.swift (the Darwin getifaddrs adapter) is excluded from
+# the metric — it is thin platform I/O validated on-device, not by unit tests.
+env:
+  COVERAGE_MIN: "95"
+
+jobs:
+  # ── Unit tests + coverage on the shared core ───────────────────────────────
+  # All business logic lives in the dependency-free MobileDataCore SwiftPM
+  # package, so unit tests run with `swift test` directly on the runner — no
+  # simulator, no signing, seconds not minutes.
+  core-tests:
+    name: Core unit tests + coverage
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Select Xcode
+        run: |
+          sudo xcode-select -s "$(ls -d /Applications/Xcode*.app | sort -V | tail -1)"
+          swift --version
+
+      # No .build cache here on purpose: a restored cache can carry a stale or
+      # half-merged default.profdata, which makes coverage export fail with
+      # "invalid instrumentation profile data (bad magic)". A clean build of this
+      # small package costs ~1 min and guarantees a valid, current profile.
+
+      - name: Run unit tests with coverage
+        run: |
+          # pipefail is essential: without it the exit code is tee's (0) and a
+          # test/compile failure would be silently swallowed.
+          set -o pipefail
+          swift test --enable-code-coverage 2>&1 | tee /tmp/swift-test.log
+
+      - name: Export & gate coverage
+        run: |
+          set -euo pipefail
+          # Deterministic paths from the build dir — no --show-codecov-path (it
+          # re-exports and trips over any stale profile in the build tree).
+          BIN_DIR=$(swift build --show-bin-path)
+          PROFDATA="$BIN_DIR/codecov/default.profdata"
+          XCTEST=$(find "$BIN_DIR" -maxdepth 1 -name '*.xctest' | head -1)
+          TESTBIN="$XCTEST/Contents/MacOS/$(basename "$XCTEST" .xctest)"
+          if [ ! -f "$PROFDATA" ] || [ ! -f "$TESTBIN" ]; then
+            echo "Missing profdata ($PROFDATA) or test binary ($TESTBIN)" >&2
+            ls -la "$BIN_DIR/codecov" 2>/dev/null || true
+            exit 1
+          fi
+          xcrun llvm-cov export \
+            -instr-profile "$PROFDATA" "$TESTBIN" \
+            -ignore-filename-regex='(Tests/|\.build/|InterfaceCounterReader\.swift)' \
+            > coverage.json
+
+          python3 - <<'PYEOF'
+          import json, os
+
+          with open("coverage.json") as f:
+              data = json.load(f)["data"][0]
+
+          total = data["totals"]["lines"]["percent"]
+          files = sorted(
+              ({"name": os.path.basename(f["filename"]),
+                "pct": f["summary"]["lines"]["percent"]} for f in data["files"]),
+              key=lambda x: x["pct"],
+          )
+          min_required = float(os.environ["COVERAGE_MIN"])
+
+          filled = int(total / 5)
+          bar = "█" * filled + "░" * (20 - filled)
+          emoji = "✅" if total >= min_required else "❌"
+
+          lines = [
+              f"## {emoji} Core coverage — {total:.1f}% (target {min_required:.0f}%)",
+              f"`{bar}` {total:.1f}%",
+              "",
+              "| File | Line coverage |",
+              "|------|---------------|",
+          ]
+          for f in files:
+              icon = "✅" if f["pct"] >= 90 else "⚠️" if f["pct"] >= 75 else "❌"
+              lines.append(f"| {f['name']} | {icon} {f['pct']:.1f}% |")
+          summary = "\n".join(lines)
+
+          if (gs := os.environ.get("GITHUB_STEP_SUMMARY")):
+              with open(gs, "a") as f:
+                  f.write(summary + "\n")
+          with open("coverage_comment.md", "w") as f:
+              f.write("<!-- coverage-report -->\n" + summary + "\n")
+
+          print(f"Total line coverage: {total:.1f}%")
+          if total < min_required:
+              print(f"::error::Coverage {total:.1f}% is below the required {min_required:.0f}%")
+              raise SystemExit(1)
+          PYEOF
+
+      - name: Post coverage comment on PR
+        if: always() && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ ! -f coverage_comment.md ]; then exit 0; fi
+          PR=${{ github.event.pull_request.number }}
+          MARKER="<!-- coverage-report -->"
+          COMMENT_ID=$(gh api "repos/${{ github.repository }}/issues/${PR}/comments" \
+            --jq ".[] | select(.body | startswith(\"$MARKER\")) | .id" | head -1)
+          if [ -n "$COMMENT_ID" ]; then
+            gh api "repos/${{ github.repository }}/issues/comments/${COMMENT_ID}" \
+              -X PATCH -f body="$(cat coverage_comment.md)"
+          else
+            gh pr comment "$PR" --body-file coverage_comment.md
+          fi
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-report
+          path: coverage.json
+          if-no-files-found: ignore
+
+  # ── App + widget compile check ─────────────────────────────────────────────
+  # The .xcodeproj is generated by XcodeGen (not committed), so regenerate then
+  # build the app scheme — which also builds the embedded widget extension —
+  # against the iOS simulator SDK to catch SwiftUI/WidgetKit breakage.
+  app-build:
+    name: Build app + widget (iOS Simulator)
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Select Xcode
+        run: sudo xcode-select -s "$(ls -d /Applications/Xcode*.app | sort -V | tail -1)"
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Install xcbeautify
+        run: brew install xcbeautify
+
+      - name: Pick simulator
+        run: |
+          SIM_UDID=$(xcrun simctl list devices available -j | python3 -c "
+          import json, sys
+          data = json.load(sys.stdin)
+          phones = [v for devs in data['devices'].values() for v in devs
+                    if 'iPhone 17' in v.get('name','') and v.get('isAvailable', False)]
+          phones.sort(key=lambda x: x['name'])
+          print(phones[-1]['udid'] if phones else '')
+          ")
+          if [ -z "$SIM_UDID" ]; then echo 'No iPhone 17 simulator' >&2; exit 1; fi
+          echo "SIM_UDID=$SIM_UDID" >> "$GITHUB_ENV"
+
+      - name: Build
+        run: |
+          set -o pipefail
+          xcodebuild build \
+            -project EveryByteCounts.xcodeproj \
+            -scheme EveryByteCounts \
+            -destination "id=$SIM_UDID" \
+            -configuration Debug \
+            CODE_SIGN_IDENTITY="" CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+            2>&1 | xcbeautify --renderer github-actions
+
+  # ── Auto-release on green main ─────────────────────────────────────────────
+  # Fires only after BOTH test jobs pass on a push to main. Computes the next
+  # semantic version from Conventional Commits since the last release tag:
+  #   feat: → minor · fix:/perf: → patch · feat!:/BREAKING CHANGE: → major
+  #   chore/docs/test/ci only → NO release (keeps versions meaningful and stops
+  #   the release bot's own chore commit from triggering another release).
+  compute-version:
+    name: Compute release version
+    needs: [core-tests, app-build]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      should_release: ${{ steps.semver.outputs.should_release }}
+      new_tag: ${{ steps.semver.outputs.new_tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Compute next version from Conventional Commits
+        id: semver
+        run: |
+          python3 - <<'PYEOF'
+          import json, os, re, subprocess
+
+          def sh(*args):
+              return subprocess.run(args, capture_output=True, text=True).stdout.strip()
+
+          semver_re = re.compile(r'^v?(\d+)\.(\d+)\.(\d+)$')
+
+          def parse(v):
+              m = semver_re.match(v or "")
+              return tuple(int(x) for x in m.groups()) if m else (0, 0, 0)
+
+          tags = sh("git", "tag", "--sort=-v:refname").splitlines()
+          semver_tags = [t for t in tags if re.match(r'^v\d+\.\d+\.\d+$', t)]
+          latest_tag = semver_tags[0] if semver_tags else None
+
+          # Base = max(latest tag, version already published in the AltStore
+          # source). The source floor means the version can only move forward.
+          base = parse(latest_tag)
+          try:
+              with open("altstore-source.json") as f:
+                  src_ver = json.load(f)["apps"][0].get("version", "0.0.0")
+              base = max(base, parse(src_ver))
+          except Exception as e:
+              print("Could not read source version:", e)
+
+          rng = f"{latest_tag}..HEAD" if latest_tag else "HEAD"
+          log = sh("git", "log", rng, "--pretty=format:%s%x1f%b%x1e")
+          entries = [e for e in log.split("\x1e") if e.strip()]
+
+          rank = {"patch": 1, "minor": 2, "major": 3}
+          feat_re = re.compile(r'^feat(\(.+?\))?:', re.I)
+          fix_re = re.compile(r'^(fix|perf)(\(.+?\))?:', re.I)
+          breaking_re = re.compile(r'^\w+(\(.+?\))?!:')
+
+          chosen = None
+          for e in entries:
+              subject, _, body = e.partition("\x1f")
+              subject = subject.strip()
+              if "BREAKING CHANGE" in (subject + "\n" + body) or breaking_re.match(subject):
+                  level = "major"
+              elif feat_re.match(subject):
+                  level = "minor"
+              elif fix_re.match(subject):
+                  level = "patch"
+              else:
+                  continue
+              if chosen is None or rank[level] > rank[chosen]:
+                  chosen = level
+
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              if chosen is None:
+                  out.write("should_release=false\n")
+                  print(f"No releasable commits since {latest_tag or '(start)'} — skipping release")
+              else:
+                  M, m, p = base
+                  if chosen == "major":
+                      M, m, p = M + 1, 0, 0
+                  elif chosen == "minor":
+                      m, p = m + 1, 0
+                  else:
+                      p += 1
+                  new_tag = f"v{M}.{m}.{p}"
+                  out.write("should_release=true\n")
+                  out.write(f"new_tag={new_tag}\n")
+                  print(f"{chosen} bump from base v{base[0]}.{base[1]}.{base[2]} -> {new_tag}")
+          PYEOF
+
+      - name: Push tag
+        if: steps.semver.outputs.should_release == 'true'
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag "${{ steps.semver.outputs.new_tag }}"
+          git push origin "${{ steps.semver.outputs.new_tag }}"
+
+  # Reuses the release pipeline via workflow_call (pushes made with GITHUB_TOKEN
+  # do not start new workflow runs, so the tag-push trigger never double-fires).
+  release:
+    name: Build & release
+    needs: compute-version
+    if: needs.compute-version.outputs.should_release == 'true'
+    uses: ./.github/workflows/release.yml
+    with:
+      tag: ${{ needs.compute-version.outputs.new_tag }}
+    permissions:
+      contents: write

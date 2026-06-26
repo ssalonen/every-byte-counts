@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Shared App Group container: the only way the app and widget see the same
+         persisted state (design §4). Must match AppConstants.appGroupIdentifier. -->
+    <key>com.apple.security.application-groups</key>
+    <array>
+        <string>group.fi.mailhub.everybytecounts</string>
+    </array>
+</dict>
+</plist>

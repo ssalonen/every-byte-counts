@@ -1,0 +1,117 @@
+name: Security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "0 8 * * 1"   # every Monday 08:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write   # upload SARIF to the GitHub Security tab
+  pull-requests: read
+
+jobs:
+  # ------------------------------------------------------------------ #
+  #  1. CodeQL – static analysis on our own Swift code                  #
+  # ------------------------------------------------------------------ #
+  codeql:
+    name: CodeQL (Swift)
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Select Xcode
+        run: sudo xcode-select -s "$(ls -d /Applications/Xcode*.app | sort -V | tail -1)"
+
+      # Install xcodegen and generate the project BEFORE codeql init. After init,
+      # CodeQL injects an x86_64 libtrace via DYLD_INSERT_LIBRARIES into every
+      # step, which makes arm64 `brew` abort with "Cannot install under Rosetta 2".
+      # Only the actual compile needs to be traced, so set the project up first.
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: swift
+          queries: security-extended
+
+      - name: Build (for CodeQL)
+        run: |
+          xcodebuild build \
+            -project EveryByteCounts.xcodeproj \
+            -scheme EveryByteCounts \
+            -destination 'generic/platform=iOS' \
+            -jobs $(sysctl -n hw.logicalcpu) \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            COMPILER_INDEX_STORE_ENABLE=NO \
+            RUN_CLANG_STATIC_ANALYZER=NO
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v4
+        with:
+          category: "/language:swift"
+
+  # ------------------------------------------------------------------ #
+  #  2. Supply-chain minimisation – the core must stay dependency-free  #
+  # ------------------------------------------------------------------ #
+  # MobileDataCore deliberately has zero third-party dependencies, which is
+  # itself the strongest supply-chain posture. This guard fails if a remote
+  # package sneaks into Package.swift, so the property is enforced, not assumed.
+  supply-chain:
+    name: Supply-chain Integrity
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Assert no third-party SwiftPM dependencies
+        run: |
+          python3 - <<'PYEOF'
+          import re, sys
+
+          src = open("Package.swift").read()
+          # Any remote package pulls from a URL; local path-based deps are fine.
+          remote = re.findall(r'\.package\s*\(\s*url:\s*"([^"]+)"', src)
+          if remote:
+              print("Unexpected third-party SwiftPM dependencies introduced:")
+              for u in remote:
+                  print(f"  - {u}")
+              print("\nMobileDataCore is intended to be dependency-free. If this is "
+                    "deliberate, update this guard and add the dep to OSV scanning.")
+              sys.exit(1)
+          print("OK: no remote SwiftPM dependencies declared.")
+
+          # If a Package.resolved ever appears, surface it for OSV scanning.
+          import os
+          if os.path.exists("Package.resolved"):
+              print("NOTE: Package.resolved present — add OSV scanning for pinned deps.")
+          PYEOF
+
+  # ------------------------------------------------------------------ #
+  #  3. Dependency review – block PRs that introduce known-bad deps     #
+  # ------------------------------------------------------------------ #
+  dependency-review:
+    name: Dependency Review
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Dependency Review
+        uses: actions/dependency-review-action@v5
+        with:
+          fail-on-severity: high
+          deny-licenses: GPL-2.0-only, GPL-2.0-or-later, GPL-3.0-only, GPL-3.0-or-later, AGPL-3.0-only, AGPL-3.0-or-later
+          comment-summary-in-pr: never
