@@ -96,8 +96,8 @@ jobs:
           unzip -p "$RUNNER_TEMP/EveryByteCounts.ipa" "Payload/EveryByteCounts.app/Info.plist" \
             | plutil -convert xml1 -o - - \
             | python3 -c "
-          import sys, plistlib
-          pl = plistlib.load(sys.stdin.buffer)
+          import sys, plistlib, io
+          pl = plistlib.load(io.BytesIO(sys.stdin.buffer.read()))
           found = pl.get('CFBundleShortVersionString', '(missing)')
           import os; expected = os.environ['VERSION_NUM']
           print(f'IPA version: {found}')
