@@ -74,13 +74,6 @@ jobs:
         run: |
           sed -i "" "s/MARKETING_VERSION: \"[^\"]*\"/MARKETING_VERSION: \"${VERSION_NUM}\"/" project.yml
           xcodegen generate
-          # XcodeGen may rewrite the Info.plist files; stamp the version
-          # directly after generation so xcodebuild copies the literal value
-          # rather than relying on $(MARKETING_VERSION) substitution.
-          for plist in App/EveryByteCounts/Info.plist Widget/EveryByteCountsWidget/Info.plist; do
-            plutil -replace CFBundleShortVersionString -string "${VERSION_NUM}" "$plist"
-            plutil -replace CFBundleVersion            -string "${VERSION_NUM}" "$plist"
-          done
 
       - name: Build archive (ad-hoc signed)
         run: |
@@ -92,7 +85,9 @@ jobs:
             -archivePath "$RUNNER_TEMP/EveryByteCounts.xcarchive" \
             CODE_SIGN_IDENTITY="-" \
             AD_HOC_CODE_SIGNING_ALLOWED=YES \
-            DEVELOPMENT_TEAM=""
+            DEVELOPMENT_TEAM="" \
+            MARKETING_VERSION="${VERSION_NUM}" \
+            CURRENT_PROJECT_VERSION="${VERSION_NUM}"
 
       - name: Package IPA
         run: |
