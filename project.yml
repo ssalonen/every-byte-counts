@@ -31,13 +31,12 @@ targets:
     platform: iOS
     sources:
       - App/EveryByteCounts
-    info:
-      path: App/EveryByteCounts/Info.plist
     entitlements:
       path: App/EveryByteCounts/EveryByteCounts.entitlements
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: fi.mailhub.everybytecounts
+        INFOPLIST_FILE: App/EveryByteCounts/Info.plist
         GENERATE_INFOPLIST_FILE: NO
     dependencies:
       - package: MobileDataCore
@@ -50,13 +49,12 @@ targets:
     platform: iOS
     sources:
       - Widget/EveryByteCountsWidget
-    info:
-      path: Widget/EveryByteCountsWidget/Info.plist
     entitlements:
       path: Widget/EveryByteCountsWidget/EveryByteCountsWidget.entitlements
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: fi.mailhub.everybytecounts.widget
+        INFOPLIST_FILE: Widget/EveryByteCountsWidget/Info.plist
         GENERATE_INFOPLIST_FILE: NO
     dependencies:
       - package: MobileDataCore

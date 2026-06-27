@@ -72,10 +72,6 @@ jobs:
 
       - name: Generate Xcode project
         run: |
-          # Stamp the version into project.yml before generation so that
-          # MARKETING_VERSION is baked into the project settings; the
-          # ProcessInfoPlistFile build phase then expands $(MARKETING_VERSION)
-          # from the project rather than relying on a command-line override.
           sed -i "" "s/MARKETING_VERSION: \"[^\"]*\"/MARKETING_VERSION: \"${VERSION_NUM}\"/" project.yml
           xcodegen generate
 
@@ -89,7 +85,9 @@ jobs:
             -archivePath "$RUNNER_TEMP/EveryByteCounts.xcarchive" \
             CODE_SIGN_IDENTITY="-" \
             AD_HOC_CODE_SIGNING_ALLOWED=YES \
-            DEVELOPMENT_TEAM=""
+            DEVELOPMENT_TEAM="" \
+            MARKETING_VERSION="${VERSION_NUM}" \
+            CURRENT_PROJECT_VERSION="${VERSION_NUM}"
 
       - name: Package IPA
         run: |
