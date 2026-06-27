@@ -93,19 +93,21 @@ jobs:
 
       - name: Verify IPA version
         run: |
-          unzip -p "$RUNNER_TEMP/EveryByteCounts.ipa" "Payload/EveryByteCounts.app/Info.plist" \
-            | plutil -convert xml1 -o - - \
-            | python3 -c "
-          import sys, plistlib, io
-          pl = plistlib.load(io.BytesIO(sys.stdin.buffer.read()))
+          unzip -p "$RUNNER_TEMP/EveryByteCounts.ipa" \
+            "Payload/EveryByteCounts.app/Info.plist" \
+            > "$RUNNER_TEMP/IPA-Info.plist"
+          python3 - "$RUNNER_TEMP/IPA-Info.plist" "$VERSION_NUM" <<'PYEOF'
+          import sys, plistlib
+          with open(sys.argv[1], 'rb') as f:
+              pl = plistlib.load(f)
           found = pl.get('CFBundleShortVersionString', '(missing)')
-          import os; expected = os.environ['VERSION_NUM']
+          expected = sys.argv[2]
           print(f'IPA version: {found}')
           if found != expected:
               print(f'ERROR: expected {expected}, got {found}', file=sys.stderr)
               raise SystemExit(1)
           print('Version OK')
-          "
+          PYEOF
 
       - name: Package IPA
         run: |
