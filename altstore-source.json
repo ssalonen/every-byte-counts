@@ -12,12 +12,20 @@
       "iconURL": "https://raw.githubusercontent.com/ssalonen/every-byte-counts/main/icon.png",
       "tintColor": "34C759",
       "category": "utilities",
-      "version": "1.0.2",
-      "versionDate": "2026-06-26T21:46:16+00:00",
+      "version": "1.0.7",
+      "versionDate": "2026-06-27T14:21:03+00:00",
       "versionDescription": "See GitHub release notes.",
-      "downloadURL": "https://github.com/ssalonen/every-byte-counts/releases/download/v1.0.2/EveryByteCounts.ipa",
-      "size": 229906,
+      "downloadURL": "https://github.com/ssalonen/every-byte-counts/releases/download/v1.0.7/EveryByteCounts.ipa",
+      "size": 229966,
       "versions": [
+        {
+          "version": "1.0.7",
+          "date": "2026-06-27T14:21:03+00:00",
+          "localizedDescription": "See GitHub release notes.",
+          "downloadURL": "https://github.com/ssalonen/every-byte-counts/releases/download/v1.0.7/EveryByteCounts.ipa",
+          "size": 229966,
+          "minOSVersion": "17.0"
+        },
         {
           "version": "1.0.2",
           "date": "2026-06-26T21:46:16+00:00",
