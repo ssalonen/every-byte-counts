@@ -91,6 +91,16 @@ jobs:
             AD_HOC_CODE_SIGNING_ALLOWED=YES \
             DEVELOPMENT_TEAM=""
 
+      - name: Package IPA
+        run: |
+          APP_PATH=$(find "$RUNNER_TEMP/EveryByteCounts.xcarchive/Products/Applications" -name "*.app" | head -1)
+          mkdir -p "$RUNNER_TEMP/Payload"
+          cp -r "$APP_PATH" "$RUNNER_TEMP/Payload/"
+          cd "$RUNNER_TEMP"
+          zip -r EveryByteCounts.ipa Payload/
+          echo "IPA_PATH=$RUNNER_TEMP/EveryByteCounts.ipa" >> "$GITHUB_ENV"
+          echo "IPA_SIZE=$(wc -c < EveryByteCounts.ipa | tr -d ' ')" >> "$GITHUB_ENV"
+
       - name: Verify IPA version
         run: |
           unzip -p "$RUNNER_TEMP/EveryByteCounts.ipa" \
@@ -108,16 +118,6 @@ jobs:
               raise SystemExit(1)
           print('Version OK')
           PYEOF
-
-      - name: Package IPA
-        run: |
-          APP_PATH=$(find "$RUNNER_TEMP/EveryByteCounts.xcarchive/Products/Applications" -name "*.app" | head -1)
-          mkdir -p "$RUNNER_TEMP/Payload"
-          cp -r "$APP_PATH" "$RUNNER_TEMP/Payload/"
-          cd "$RUNNER_TEMP"
-          zip -r EveryByteCounts.ipa Payload/
-          echo "IPA_PATH=$RUNNER_TEMP/EveryByteCounts.ipa" >> "$GITHUB_ENV"
-          echo "IPA_SIZE=$(wc -c < EveryByteCounts.ipa | tr -d ' ')" >> "$GITHUB_ENV"
 
       - name: Update altstore-source.json
         run: |
