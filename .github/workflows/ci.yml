@@ -204,7 +204,7 @@ jobs:
         id: semver
         run: |
           python3 - <<'PYEOF'
-          import json, os, re, subprocess
+          import os, re, subprocess
 
           def sh(*args):
               return subprocess.run(args, capture_output=True, text=True).stdout.strip()
@@ -219,15 +219,7 @@ jobs:
           semver_tags = [t for t in tags if re.match(r'^v\d+\.\d+\.\d+$', t)]
           latest_tag = semver_tags[0] if semver_tags else None
 
-          # Base = max(latest tag, version already published in the AltStore
-          # source). The source floor means the version can only move forward.
           base = parse(latest_tag)
-          try:
-              with open("altstore-source.json") as f:
-                  src_ver = json.load(f)["apps"][0].get("version", "0.0.0")
-              base = max(base, parse(src_ver))
-          except Exception as e:
-              print("Could not read source version:", e)
 
           rng = f"{latest_tag}..HEAD" if latest_tag else "HEAD"
           log = sh("git", "log", rng, "--pretty=format:%s%x1f%b%x1e")

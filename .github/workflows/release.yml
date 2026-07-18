@@ -14,11 +14,11 @@ on:
         type: string
 
 permissions:
-  contents: write  # needed to push altstore-source.json and create the release
+  contents: write  # needed to commit project.yml's version bump and create the GH release
 
 jobs:
   release:
-    name: Build & Release IPA
+    name: Sign & upload to TestFlight
     runs-on: macos-latest
 
     steps:
@@ -75,7 +75,30 @@ jobs:
           sed -i "" "s/MARKETING_VERSION: \"[^\"]*\"/MARKETING_VERSION: \"${VERSION_NUM}\"/" project.yml
           xcodegen generate
 
-      - name: Build archive (ad-hoc signed)
+      # App Store Connect API key auth (no Apple ID/password/2FA in CI). The key
+      # itself is the only long-lived secret; it's scoped, revocable, and never
+      # touches the repo. xcodebuild reads it from this well-known path.
+      - name: Install App Store Connect API key
+        env:
+          APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          APP_STORE_CONNECT_API_KEY_P8: ${{ secrets.APP_STORE_CONNECT_API_KEY_P8 }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/private_keys"
+          AUTH_KEY_PATH="$RUNNER_TEMP/private_keys/AuthKey_${APP_STORE_CONNECT_KEY_ID}.p8"
+          printf '%s' "$APP_STORE_CONNECT_API_KEY_P8" > "$AUTH_KEY_PATH"
+          echo "AUTH_KEY_PATH=$AUTH_KEY_PATH" >> "$GITHUB_ENV"
+
+      # -allowProvisioningUpdates + the API key let Xcode fetch/create the
+      # distribution certificate and App Store provisioning profiles itself
+      # (requires the key to have the "Developer" role or higher) — no manual
+      # .p12/.mobileprovision export or base64 secrets to maintain or rotate.
+      # CURRENT_PROJECT_VERSION uses the run number so build numbers are always
+      # unique and monotonically increasing across uploads of the same version.
+      - name: Build archive (App Store signed)
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
         run: |
           xcodebuild archive \
             -project EveryByteCounts.xcodeproj \
@@ -83,102 +106,65 @@ jobs:
             -configuration Release \
             -destination 'generic/platform=iOS' \
             -archivePath "$RUNNER_TEMP/EveryByteCounts.xcarchive" \
-            CODE_SIGN_IDENTITY="-" \
-            AD_HOC_CODE_SIGNING_ALLOWED=YES \
-            DEVELOPMENT_TEAM="" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$AUTH_KEY_PATH" \
+            -authenticationKeyID "$APP_STORE_CONNECT_KEY_ID" \
+            -authenticationKeyIssuerID "$APP_STORE_CONNECT_ISSUER_ID" \
+            CODE_SIGN_STYLE=Automatic \
+            DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
             MARKETING_VERSION="${VERSION_NUM}" \
-            CURRENT_PROJECT_VERSION="${VERSION_NUM}"
+            CURRENT_PROJECT_VERSION="${{ github.run_number }}"
 
-      - name: Package IPA
+      # destination=upload makes xcodebuild push the exported IPA straight to
+      # App Store Connect in the same step — no separate altool/Transporter call.
+      - name: Export & upload to App Store Connect (TestFlight)
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
         run: |
-          APP_PATH=$(find "$RUNNER_TEMP/EveryByteCounts.xcarchive/Products/Applications" -name "*.app" | head -1)
-          mkdir -p "$RUNNER_TEMP/Payload"
-          cp -r "$APP_PATH" "$RUNNER_TEMP/Payload/"
-          cd "$RUNNER_TEMP"
-          zip -r EveryByteCounts.ipa Payload/
-          echo "IPA_PATH=$RUNNER_TEMP/EveryByteCounts.ipa" >> "$GITHUB_ENV"
-          echo "IPA_SIZE=$(wc -c < EveryByteCounts.ipa | tr -d ' ')" >> "$GITHUB_ENV"
+          cat > "$RUNNER_TEMP/ExportOptions.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>method</key>
+              <string>app-store-connect</string>
+              <key>teamID</key>
+              <string>${APPLE_TEAM_ID}</string>
+              <key>signingStyle</key>
+              <string>automatic</string>
+              <key>destination</key>
+              <string>upload</string>
+          </dict>
+          </plist>
+          PLIST
 
-      - name: Verify IPA version
-        run: |
-          unzip -p "$RUNNER_TEMP/EveryByteCounts.ipa" \
-            "Payload/EveryByteCounts.app/Info.plist" \
-            > "$RUNNER_TEMP/IPA-Info.plist"
-          python3 - "$RUNNER_TEMP/IPA-Info.plist" "$VERSION_NUM" <<'PYEOF'
-          import sys, plistlib
-          with open(sys.argv[1], 'rb') as f:
-              pl = plistlib.load(f)
-          found = pl.get('CFBundleShortVersionString', '(missing)')
-          expected = sys.argv[2]
-          print(f'IPA version: {found}')
-          if found != expected:
-              print(f'ERROR: expected {expected}, got {found}', file=sys.stderr)
-              raise SystemExit(1)
-          print('Version OK')
-          PYEOF
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/EveryByteCounts.xcarchive" \
+            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
+            -exportPath "$RUNNER_TEMP/export" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$AUTH_KEY_PATH" \
+            -authenticationKeyID "$APP_STORE_CONNECT_KEY_ID" \
+            -authenticationKeyIssuerID "$APP_STORE_CONNECT_ISSUER_ID"
 
-      - name: Update altstore-source.json
-        run: |
-          export DOWNLOAD_URL="https://github.com/${{ github.repository }}/releases/download/${TAG}/EveryByteCounts.ipa"
-          export DATE="$(date -u +"%Y-%m-%dT%H:%M:%S+00:00")"
-
-          python3 - <<'PYEOF'
-          import json, os, shutil
-
-          version_num  = os.environ["VERSION_NUM"]
-          ipa_size     = int(os.environ["IPA_SIZE"])
-          download_url = os.environ["DOWNLOAD_URL"]
-          date         = os.environ["DATE"]
-
-          with open("altstore-source.json") as f:
-              source = json.load(f)
-
-          app = source["apps"][0]
-
-          new_entry = {
-              "version": version_num,
-              "date": date,
-              "localizedDescription": "See GitHub release notes.",
-              "downloadURL": download_url,
-              "size": ipa_size,
-              "minOSVersion": "17.0",
-          }
-
-          app["versions"] = [v for v in app.get("versions", []) if v["version"] != version_num]
-          app["versions"].insert(0, new_entry)
-
-          # Top-level fields SideStore/AltStore read to find the latest version.
-          app["version"] = version_num
-          app["versionDate"] = date
-          app["versionDescription"] = "See GitHub release notes."
-          app["downloadURL"] = download_url
-          app["size"] = ipa_size
-
-          with open("altstore-source.json", "w") as f:
-              json.dump(source, f, indent=2)
-              f.write("\n")
-          shutil.copy("altstore-source.json", os.path.join(os.environ["RUNNER_TEMP"], "altstore-source.json"))
-
-          print(f"Updated source to {version_num} ({ipa_size} bytes)")
-          PYEOF
-
-      - name: Commit updated source JSON and project version
+      - name: Commit project.yml version bump
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git remote set-url origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
           git fetch origin main
           git checkout main
-          cp "$RUNNER_TEMP/altstore-source.json" altstore-source.json
           # Keep project.yml in sync so local builds produce the right version
           sed -i "" "s/MARKETING_VERSION: \"[^\"]*\"/MARKETING_VERSION: \"${VERSION_NUM}\"/" project.yml
-          git add altstore-source.json project.yml
+          git add project.yml
           if git diff --cached --quiet; then
             echo "No changes to commit"
           else
             # [skip ci] avoids a needless macOS run; a lone chore commit is
             # non-releasable anyway so it could never trigger another release.
-            git commit -m "chore: update AltStore source and version for ${TAG} [skip ci]"
+            git commit -m "chore: bump project.yml version to ${TAG} [skip ci]"
             git push origin HEAD:main
           fi
 
@@ -194,16 +180,7 @@ jobs:
 
             ---
 
-            ## Install via SideStore / AltStore
-
-            **Add this source URL in SideStore/AltStore:**
-            ```
-            https://raw.githubusercontent.com/${{ github.repository }}/main/altstore-source.json
-            ```
-
-            Or [download the IPA directly](https://github.com/${{ github.repository }}/releases/download/${{ env.TAG }}/EveryByteCounts.ipa) and open it in SideStore/AltStore.
-
-            ---
-            *Unsigned build — SideStore/AltStore will sign it with your Apple ID on install.*
-          files: ${{ env.IPA_PATH }}
-          fail_on_unmatched_files: true
+            Build `${{ env.VERSION_NUM }} (${{ github.run_number }})` uploaded to
+            [TestFlight](https://appstoreconnect.apple.com/). Once Apple finishes
+            processing (usually 5-15 min), it's available to internal testers
+            immediately, or to external testers after Beta App Review.
