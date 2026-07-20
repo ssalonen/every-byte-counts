@@ -18,6 +18,11 @@
     <string>$(CURRENT_PROJECT_VERSION)</string>
     <key>UILaunchScreen</key>
     <dict/>
+    <!-- Export compliance: the app uses no non-exempt encryption (no custom
+         crypto; OS-provided protection is exempt). Declaring it here answers
+         App Store Connect's per-build compliance question automatically. -->
+    <key>ITSAppUsesNonExemptEncryption</key>
+    <false/>
     <!-- App Store validation (ITMS-90474) rejects bundles with no declared
          orientations; iPad multitasking additionally requires all four. -->
     <key>UISupportedInterfaceOrientations</key>
