@@ -12,6 +12,7 @@ final class DataStoreTests: XCTestCase {
 
     override func tearDown() {
         try? FileManager.default.removeItem(at: url)
+        try? FileManager.default.removeItem(at: url.appendingPathExtension("corrupt"))
         super.tearDown()
     }
 
@@ -37,6 +38,42 @@ final class DataStoreTests: XCTestCase {
         let store = FileDataStore(url: url)
         // Must not throw or crash on a garbage file; degrade to defaults.
         XCTAssertEqual(store.load().plan.capGB, PlanConfig.default.capGB)
+    }
+
+    func testCorruptFileIsPreservedAsBackupAndSavingResumes() throws {
+        let garbage = "this is not json".data(using: .utf8)!
+        try garbage.write(to: url)
+        let store = FileDataStore(url: url)
+
+        XCTAssertEqual(store.load(), AppState())
+        // The undecodable bytes must survive for recovery, not be overwritten.
+        XCTAssertEqual(try Data(contentsOf: store.corruptBackupURL), garbage)
+
+        // And the store behaves like a fresh install from here on.
+        store.save(AppState(plan: PlanConfig(capGB: 33, cycleResetDay: 5)))
+        XCTAssertEqual(store.load().plan.capGB, 33)
+    }
+
+    func testUnreadableFileBlocksSaveSoRealDataIsNotClobbered() throws {
+        // A directory at the store's path is "exists but can't be read as data" —
+        // the same shape as a data-protection failure before first unlock.
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        let store = FileDataStore(url: url)
+
+        XCTAssertEqual(store.load(), AppState(), "unreadable file degrades to defaults for display")
+        store.save(AppState(plan: PlanConfig(capGB: 99, cycleResetDay: 1)))
+
+        var isDirectory: ObjCBool = false
+        _ = FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory)
+        XCTAssertTrue(isDirectory.boolValue, "save after a failed read must not touch the store file")
+
+        // Once the file becomes readable again (here: the blocker goes away and a
+        // valid state exists), saving resumes.
+        try FileManager.default.removeItem(at: url)
+        FileDataStore(url: url).save(AppState(plan: PlanConfig(capGB: 12, cycleResetDay: 2)))
+        XCTAssertEqual(store.load().plan.capGB, 12)
+        store.save(AppState(plan: PlanConfig(capGB: 21, cycleResetDay: 3)))
+        XCTAssertEqual(store.load().plan.capGB, 21)
     }
 
     func testSaveOverwritesPreviousState() {

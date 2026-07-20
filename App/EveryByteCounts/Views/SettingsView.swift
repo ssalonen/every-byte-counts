@@ -27,6 +27,15 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
+                if model.storageUnavailable {
+                    Section {
+                        Label("Shared storage is unavailable, so these settings can't be saved — they will reset when the app closes. This build may be missing its App Group entitlement; please report it.",
+                              systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
+                }
+
                 Section("Monthly plan") {
                     Stepper(value: $capGB, in: 1...500, step: 1) {
                         Text("Cap: \(Formatters.gigabytes(capGB))")

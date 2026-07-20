@@ -174,6 +174,22 @@ jobs:
             MARKETING_VERSION="${VERSION_NUM}" \
             CURRENT_PROJECT_VERSION="${{ github.run_number }}"
 
+      # A build signed without the App Group entitlement still archives, exports
+      # and uploads fine — but at runtime containerURL(...) returns nil, the app
+      # silently falls back to in-memory storage, and every setting is lost when
+      # the process dies (this shipped once as "settings reset after updating
+      # TestFlight"). Fail the release instead.
+      - name: Verify App Group entitlement in archive
+        run: |
+          APP="$RUNNER_TEMP/EveryByteCounts.xcarchive/Products/Applications/EveryByteCounts.app"
+          for BUNDLE in "$APP" "$APP/PlugIns/EveryByteCountsWidgetExtension.appex"; do
+            if ! codesign -d --entitlements - "$BUNDLE" 2>/dev/null | grep -q "group.fi.mailhub.everybytecounts"; then
+              echo "::error::$(basename "$BUNDLE") is signed WITHOUT the group.fi.mailhub.everybytecounts App Group entitlement — persisted state would be lost on every app restart. Check that the App Groups capability (with this group) is enabled for both bundle IDs in the Apple Developer portal and included in the provisioning profiles."
+              exit 1
+            fi
+            echo "OK: $(basename "$BUNDLE") carries the App Group entitlement"
+          done
+
       # exportArchive with automatic signing refuses to mint missing App Store
       # profiles without cloud signing (Admin-only). Mint them ourselves via
       # the official ASC API instead — App Manager is enough for that — and
