@@ -24,6 +24,9 @@ account** — and presents a calibrated *estimate* of usage.
 - **Forecasting** — a recency-weighted *remaining daily budget* ("you can use
   X GB/day and stay under"), a projected end-of-cycle total, and a
   safe / at-risk / over status.
+- **Cumulative burn-up chart** — usage accumulating across the cycle with the
+  projection continued to cycle end as a dashed status-coloured line against
+  the cap line, so "where is this heading" is visible at a glance.
 - **Overage cost (EUR)** — flat €/GB on the projected excess, behind a swappable
   cost-strategy abstraction.
 - **Threshold alerts** — local notifications at 50 / 80 / 100 % (configurable).
@@ -89,7 +92,7 @@ which:
 | Sampling + reboot | `Sampling/SamplingEngine.swift`, `RebootAdjuster.swift` |
 | Persistence | `Persistence/DataStore.swift`, `AppState.swift` |
 | Cycle/usage math | `Usage/BillingCycleCalendar.swift`, `DailyAggregator.swift`, `UsageCalculator.swift` |
-| Forecasting | `Forecasting/Forecaster.swift` |
+| Forecasting | `Forecasting/Forecaster.swift`, `CumulativeUsageSeries.swift` |
 | Cost model | `Cost/CostStrategy.swift`, `CostStrategies.swift` |
 | Alerts | `Alerts/AlertEvaluator.swift` |
 | Facade | `MobileDataService.swift` |
