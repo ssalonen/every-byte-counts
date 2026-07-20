@@ -174,8 +174,31 @@ jobs:
             MARKETING_VERSION="${VERSION_NUM}" \
             CURRENT_PROJECT_VERSION="${{ github.run_number }}"
 
+      # exportArchive with automatic signing refuses to mint missing App Store
+      # profiles without cloud signing (Admin-only). Mint them ourselves via
+      # the official ASC API instead — App Manager is enough for that — and
+      # export with manual signing below. Fixed profile names + delete-and-
+      # recreate make this idempotent; a rotated certificate self-heals.
+      - name: Create & install App Store provisioning profiles
+        env:
+          APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+        run: |
+          CERT_PEM="$RUNNER_TEMP/dist-cert.pem"
+          security find-certificate -a -p "$KEYCHAIN_PATH" > "$CERT_PEM"
+          python3 scripts/create_appstore_profiles.py \
+            --key-path "$AUTH_KEY_PATH" \
+            --key-id "$APP_STORE_CONNECT_KEY_ID" \
+            --issuer-id "$APP_STORE_CONNECT_ISSUER_ID" \
+            --cert-pem "$CERT_PEM" \
+            --bundle-id fi.mailhub.everybytecounts \
+            --bundle-id fi.mailhub.everybytecounts.widget
+
       # destination=upload makes xcodebuild push the exported IPA straight to
-      # App Store Connect in the same step — no separate altool/Transporter call.
+      # App Store Connect in the same step — no separate altool/Transporter
+      # call. Signing is manual: the certificate comes from the temp keychain,
+      # the profiles from the step above; the API key flags below are only for
+      # the upload leg.
       - name: Export & upload to App Store Connect (TestFlight)
         env:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
@@ -192,7 +215,16 @@ jobs:
               <key>teamID</key>
               <string>${APPLE_TEAM_ID}</string>
               <key>signingStyle</key>
-              <string>automatic</string>
+              <string>manual</string>
+              <key>signingCertificate</key>
+              <string>Apple Distribution</string>
+              <key>provisioningProfiles</key>
+              <dict>
+                  <key>fi.mailhub.everybytecounts</key>
+                  <string>CI AppStore fi.mailhub.everybytecounts</string>
+                  <key>fi.mailhub.everybytecounts.widget</key>
+                  <string>CI AppStore fi.mailhub.everybytecounts.widget</string>
+              </dict>
               <key>destination</key>
               <string>upload</string>
           </dict>
@@ -203,7 +235,6 @@ jobs:
             -archivePath "$RUNNER_TEMP/EveryByteCounts.xcarchive" \
             -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
             -exportPath "$RUNNER_TEMP/export" \
-            -allowProvisioningUpdates \
             -authenticationKeyPath "$AUTH_KEY_PATH" \
             -authenticationKeyID "$APP_STORE_CONNECT_KEY_ID" \
             -authenticationKeyIssuerID "$APP_STORE_CONNECT_ISSUER_ID"
