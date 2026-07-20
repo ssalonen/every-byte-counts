@@ -70,9 +70,7 @@ public final class MobileDataService {
             daysRemaining: summary.daysRemaining,
             costStrategy: strategy
         )
-        let today = aggregator.calendar.startOfDay(for: now)
-        let usedToday = daily.first { $0.date == today }?.cellular ?? .zero
-        return UsageReport(summary: summary, forecast: forecast, dailyTotals: daily, usedToday: usedToday, plan: state.plan)
+        return UsageReport(summary: summary, forecast: forecast, dailyTotals: daily, plan: state.plan)
     }
 
     /// Closed cycles as history rows, newest first (design §2).

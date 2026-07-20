@@ -6,8 +6,7 @@ final class MobileDataServiceTests: XCTestCase {
         MobileDataService(
             store: store,
             reader: reader,
-            calendar: BillingCycleCalendar(calendar: TestDates.calendar),
-            aggregator: DailyAggregator(calendar: TestDates.calendar)
+            calendar: BillingCycleCalendar(calendar: TestDates.calendar)
         )
     }
 
@@ -25,24 +24,6 @@ final class MobileDataServiceTests: XCTestCase {
         XCTAssertEqual(report.summary.remaining.bytes, 15 * GB)
         XCTAssertEqual(report.summary.fractionUsed, 0.25, accuracy: 1e-9)
         XCTAssertFalse(report.dailyTotals.isEmpty)
-    }
-
-    func testReportExposesUsageForCurrentDay() {
-        let store = InMemoryDataStore(AppState(plan: PlanConfig(capGB: 20, cycleResetDay: 1)))
-        let reader = MockCounterReader(cellular: 0)
-        let service = makeService(reader, store: store)
-
-        // 3 GB lands on Mar 4 (the interval ends exactly at midnight), then
-        // 1 GB entirely within Mar 5.
-        service.sample(now: TestDates.date(2026, 3, 4, 12))
-        reader.add(cellular: 3 * GB)
-        service.sample(now: TestDates.date(2026, 3, 5, 0, 0))
-        reader.add(cellular: 1 * GB)
-        service.sample(now: TestDates.date(2026, 3, 5, 12))
-
-        let report = service.report(asOf: TestDates.date(2026, 3, 5, 18))
-        XCTAssertEqual(report.usedToday.bytes, 1 * GB)   // only today's slice
-        XCTAssertEqual(report.summary.used.bytes, 4 * GB) // cycle total unchanged
     }
 
     func testCycleHistoryExposesOverageAndCost() {
@@ -77,7 +58,6 @@ final class MobileDataServiceTests: XCTestCase {
         let report = service.report(asOf: TestDates.date(2026, 3, 15, 12))
 
         XCTAssertEqual(report.summary.used, .zero)
-        XCTAssertEqual(report.usedToday, .zero)
         XCTAssertEqual(report.summary.remaining.bytes, 20_000_000_000)
         XCTAssertTrue(report.dailyTotals.isEmpty)
         XCTAssertEqual(report.forecast.status, .safe)

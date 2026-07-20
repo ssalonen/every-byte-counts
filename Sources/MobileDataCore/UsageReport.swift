@@ -6,16 +6,12 @@ public struct UsageReport: Equatable, Sendable {
     public var summary: UsageSummary
     public var forecast: Forecast
     public var dailyTotals: [DailyTotal]
-    /// Cellular usage attributed to the calendar day of `report(asOf:)`, so
-    /// today's spend is visible without waiting for the cycle to finish.
-    public var usedToday: DataSize
     public var plan: PlanConfig
 
-    public init(summary: UsageSummary, forecast: Forecast, dailyTotals: [DailyTotal], usedToday: DataSize, plan: PlanConfig) {
+    public init(summary: UsageSummary, forecast: Forecast, dailyTotals: [DailyTotal], plan: PlanConfig) {
         self.summary = summary
         self.forecast = forecast
         self.dailyTotals = dailyTotals
-        self.usedToday = usedToday
         self.plan = plan
     }
 }

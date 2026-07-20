@@ -8,7 +8,6 @@ struct UsageEntry: TimelineEntry {
     let remaining: DataSize
     let cap: DataSize
     let fractionUsed: Double
-    let usedToday: DataSize
     let daysRemaining: Int
     let status: ForecastStatus
 
@@ -17,7 +16,6 @@ struct UsageEntry: TimelineEntry {
         remaining: DataSize(gigabytes: 12.7),
         cap: DataSize(gigabytes: 20),
         fractionUsed: 0.365,
-        usedToday: DataSize(gigabytes: 0.48),
         daysRemaining: 14,
         status: .safe
     )
@@ -56,7 +54,6 @@ struct UsageProvider: TimelineProvider {
             remaining: report.summary.remaining,
             cap: report.summary.cap,
             fractionUsed: report.summary.fractionUsed,
-            usedToday: report.usedToday,
             daysRemaining: report.summary.daysRemaining,
             status: report.forecast.status
         )

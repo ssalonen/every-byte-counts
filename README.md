@@ -15,9 +15,6 @@ account** — and presents a calibrated *estimate* of usage.
 - **Quota & remaining allowance** — configure a monthly cap (GB) and a billing
   reset day; see used / remaining / % consumed / days left, auto-resetting each
   cycle.
-- **Today's usage** — what you've spent so far *today*, measured against the
-  remaining daily budget, on the dashboard and widgets — no need to wait for the
-  cycle to finish.
 - **Mid-cycle calibration** — installed partway through a billing cycle? Enter
   the usage your carrier reports so far and the app counts on from that figure —
   totals, forecast, overage cost and alerts are all corrected, no need to wait
