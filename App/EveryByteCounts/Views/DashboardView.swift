@@ -12,9 +12,6 @@ struct DashboardView: View {
             ScrollView {
                 if let report = model.report {
                     VStack(spacing: 20) {
-                        if model.storageUnavailable {
-                            StorageUnavailableBanner()
-                        }
                         RemainingRing(summary: report.summary)
                         ForecastCard(forecast: report.forecast)
                         CumulativeCard(report: report)
@@ -29,24 +26,6 @@ struct DashboardView: View {
             .navigationTitle("Cellular Data")
             .refreshable { model.onForeground() }
         }
-    }
-}
-
-/// Shown when the App Group container couldn't be opened (see
-/// `DashboardModel.storageUnavailable`): the session runs on volatile memory,
-/// so pretending everything is fine would silently lose the user's data.
-private struct StorageUnavailableBanner: View {
-    var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: "exclamationmark.triangle.fill")
-                .foregroundStyle(.white)
-            Text("Shared storage is unavailable — settings and usage history won't survive closing the app. This build may be missing its App Group entitlement; please report it.")
-                .font(.caption)
-                .foregroundStyle(.white)
-        }
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.red, in: RoundedRectangle(cornerRadius: 12))
     }
 }
 

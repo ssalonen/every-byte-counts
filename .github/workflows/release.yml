@@ -175,10 +175,9 @@ jobs:
             CURRENT_PROJECT_VERSION="${{ github.run_number }}"
 
       # A build signed without the App Group entitlement still archives, exports
-      # and uploads fine — but at runtime containerURL(...) returns nil, the app
-      # silently falls back to in-memory storage, and every setting is lost when
-      # the process dies (this shipped once as "settings reset after updating
-      # TestFlight"). Fail the release instead.
+      # and uploads fine, but at runtime containerURL(...) returns nil and the
+      # app has no persistent storage. Fail the release here rather than let it
+      # reach a device.
       - name: Verify App Group entitlement in archive
         run: |
           APP="$RUNNER_TEMP/EveryByteCounts.xcarchive/Products/Applications/EveryByteCounts.app"

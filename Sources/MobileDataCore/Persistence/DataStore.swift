@@ -23,10 +23,9 @@ public final class InMemoryDataStore: DataStore {
 /// JSON-file store living in the App Group container — the only place the app and
 /// widget can see the same bytes.
 ///
-/// Failure semantics matter here because callers (the `SamplingEngine`) do
-/// load → mutate → save: a `load()` that papered over a transient read error by
-/// returning defaults would get those defaults saved right back, permanently
-/// wiping the user's plan and history. So the three failure modes are kept apart:
+/// Callers (the `SamplingEngine`) do load → mutate → save, so `load()` must not
+/// fabricate default state on a read failure — it would be saved straight back
+/// over the real bytes. The three failure modes are therefore kept apart:
 ///
 /// - **File missing** — genuine first run. Defaults are correct and saving is fine.
 /// - **File exists but can't be read** — transient I/O failure, e.g. data
