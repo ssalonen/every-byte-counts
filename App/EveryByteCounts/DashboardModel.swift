@@ -14,6 +14,12 @@ final class DashboardModel: ObservableObject {
     @Published private(set) var history: [CycleSummary] = []
     @Published var plan: PlanConfig = .default
 
+    /// True when the App Group container could not be opened and the app is
+    /// running on a throwaway in-memory store: everything *appears* to work but
+    /// nothing survives the process. Surfaced as a banner so a build signed
+    /// without the App Group entitlement can't masquerade as healthy.
+    @Published private(set) var storageUnavailable = false
+
     private let service: MobileDataService
 
     init(service: MobileDataService? = nil) {
@@ -25,6 +31,7 @@ final class DashboardModel: ObservableObject {
             self.service = live
         } else {
             self.service = MobileDataService(store: InMemoryDataStore(), reader: PreviewCounterReader())
+            storageUnavailable = true
         }
         self.plan = self.service.currentState().plan
     }
