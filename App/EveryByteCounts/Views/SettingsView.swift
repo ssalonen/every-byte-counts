@@ -12,6 +12,14 @@ struct SettingsView: View {
     @State private var eurPerGB: Double = 5
     @State private var carrierUsedGB: Double = 0
     @State private var didCalibrate = false
+    @State private var enabledThresholds: Set<Double> = []
+    @State private var justSaved = false
+
+    /// Standard thresholds plus anything already in the plan, so a custom value
+    /// persisted earlier still shows up as a toggleable row.
+    private var thresholdOptions: [Double] {
+        Set([0.5, 0.8, 1.0]).union(model.plan.alertThresholds).sorted()
+    }
 
     var body: some View {
         NavigationStack {
@@ -51,13 +59,22 @@ struct SettingsView: View {
                 }
 
                 Section("Alerts") {
-                    ForEach(model.plan.alertThresholds, id: \.self) { t in
-                        Text("Notify at \(Int(t * 100))%")
+                    ForEach(thresholdOptions, id: \.self) { t in
+                        Toggle("Notify at \(Int(t * 100))%", isOn: thresholdBinding(for: t))
                     }
                 }
 
                 Section {
-                    Button("Save") { save() }
+                    Button {
+                        save()
+                    } label: {
+                        // Full-width label so the whole row is tappable, not
+                        // just the text.
+                        Label(justSaved ? "Saved" : "Save",
+                              systemImage: justSaved ? "checkmark" : "square.and.arrow.down")
+                            .frame(maxWidth: .infinity)
+                            .contentShape(Rectangle())
+                    }
                 }
 
                 Section {
@@ -78,6 +95,20 @@ struct SettingsView: View {
         // match the carrier's.
         carrierUsedGB = model.report?.summary.used.gigabytes ?? 0
         didCalibrate = false
+        enabledThresholds = Set(model.plan.alertThresholds)
+    }
+
+    private func thresholdBinding(for threshold: Double) -> Binding<Bool> {
+        Binding(
+            get: { enabledThresholds.contains(threshold) },
+            set: { enabled in
+                if enabled {
+                    enabledThresholds.insert(threshold)
+                } else {
+                    enabledThresholds.remove(threshold)
+                }
+            }
+        )
     }
 
     private func save() {
@@ -85,6 +116,13 @@ struct SettingsView: View {
         plan.capGB = capGB
         plan.cycleResetDay = resetDay
         plan.costModel = .flatRate(eurPerGB: eurPerGB)
+        plan.alertThresholds = enabledThresholds.sorted()
         model.savePlan(plan)
+
+        withAnimation { justSaved = true }
+        Task {
+            try? await Task.sleep(for: .seconds(1.5))
+            withAnimation { justSaved = false }
+        }
     }
 }
