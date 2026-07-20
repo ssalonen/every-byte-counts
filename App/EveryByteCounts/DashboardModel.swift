@@ -27,11 +27,9 @@ final class DashboardModel: ObservableObject {
             // The App Group container is the app's only persistent storage. A nil
             // here means the build is signed without the
             // group.fi.mailhub.everybytecounts entitlement — a misconfiguration
-            // no runtime workaround can fix. The previous in-memory fallback hid
-            // exactly this: the app ran, appeared to save, and lost everything on
-            // the next launch. Fail loudly at startup instead so the fault can't
-            // ship unnoticed; the release pipeline's entitlement check is meant
-            // to catch it even earlier.
+            // no runtime workaround can fix, so fail loudly at startup rather
+            // than run in a state that can only lose data. The release
+            // pipeline's entitlement check is meant to catch this even earlier.
             fatalError("""
                 App Group '\(AppConstants.appGroupIdentifier)' is unavailable. \
                 The app is signed without its App Group entitlement, so there is \
