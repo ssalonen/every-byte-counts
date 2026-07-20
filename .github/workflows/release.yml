@@ -75,6 +75,27 @@ jobs:
           sed -i "" "s/MARKETING_VERSION: \"[^\"]*\"/MARKETING_VERSION: \"${VERSION_NUM}\"/" project.yml
           xcodegen generate
 
+      # Fail fast with a clear message if the signing secrets aren't visible.
+      # The classic trap: when this workflow runs via workflow_call, the caller
+      # must forward secrets with `secrets: inherit` — otherwise every secret
+      # silently expands to "" and xcodebuild dies with a cryptic flag error.
+      - name: Verify signing secrets are present
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          APP_STORE_CONNECT_API_KEY_P8: ${{ secrets.APP_STORE_CONNECT_API_KEY_P8 }}
+        run: |
+          missing=()
+          [ -n "$APPLE_TEAM_ID" ]                || missing+=(APPLE_TEAM_ID)
+          [ -n "$APP_STORE_CONNECT_KEY_ID" ]     || missing+=(APP_STORE_CONNECT_KEY_ID)
+          [ -n "$APP_STORE_CONNECT_ISSUER_ID" ]  || missing+=(APP_STORE_CONNECT_ISSUER_ID)
+          [ -n "$APP_STORE_CONNECT_API_KEY_P8" ] || missing+=(APP_STORE_CONNECT_API_KEY_P8)
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "::error::Missing secrets: ${missing[*]}. Add them under Settings → Secrets and variables → Actions; if this run came through workflow_call, ensure the caller uses 'secrets: inherit'."
+            exit 1
+          fi
+
       # App Store Connect API key auth (no Apple ID/password/2FA in CI). The key
       # itself is the only long-lived secret; it's scoped, revocable, and never
       # touches the repo. xcodebuild reads it from this well-known path.

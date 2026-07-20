@@ -57,5 +57,8 @@ jobs:
     uses: ./.github/workflows/release.yml
     with:
       tag: ${{ needs.tag.outputs.new_tag }}
+    # Called workflows get NO repository secrets unless the caller forwards
+    # them; without this the signing steps see only empty strings.
+    secrets: inherit
     permissions:
       contents: write
