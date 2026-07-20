@@ -14,3 +14,6 @@ DerivedData/
 .build/
 .swiftpm/
 build/
+
+# Python bytecode (CI helper scripts)
+__pycache__/
