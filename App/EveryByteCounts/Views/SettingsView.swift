@@ -14,6 +14,9 @@ struct SettingsView: View {
     @State private var didCalibrate = false
     @State private var enabledThresholds: Set<Double> = []
     @State private var justSaved = false
+    // The decimal pad has no Return key, so the calibration field needs an
+    // explicit way to give up focus or the keyboard can never be dismissed.
+    @FocusState private var carrierUsedFieldFocused: Bool
 
     /// Standard thresholds plus anything already in the plan, so a custom value
     /// persisted earlier still shows up as a toggleable row.
@@ -49,6 +52,7 @@ struct SettingsView: View {
                             .keyboardType(.decimalPad)
                             .multilineTextAlignment(.trailing)
                             .frame(maxWidth: 100)
+                            .focused($carrierUsedFieldFocused)
                         Text("GB").foregroundStyle(.secondary)
                     }
                     Button(didCalibrate ? "Calibrated ✓" : "Calibrate") {
@@ -83,6 +87,13 @@ struct SettingsView: View {
                 }
             }
             .navigationTitle("Settings")
+            .scrollDismissesKeyboard(.interactively)
+            .toolbar {
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("Done") { carrierUsedFieldFocused = false }
+                }
+            }
             .onAppear(perform: loadFromPlan)
         }
     }
