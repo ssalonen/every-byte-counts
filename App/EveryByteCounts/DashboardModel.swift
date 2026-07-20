@@ -14,24 +14,30 @@ final class DashboardModel: ObservableObject {
     @Published private(set) var history: [CycleSummary] = []
     @Published var plan: PlanConfig = .default
 
-    /// True when the App Group container could not be opened and the app is
-    /// running on a throwaway in-memory store: everything *appears* to work but
-    /// nothing survives the process. Surfaced as a banner so a build signed
-    /// without the App Group entitlement can't masquerade as healthy.
-    @Published private(set) var storageUnavailable = false
-
     private let service: MobileDataService
 
+    /// - Parameter service: injected by tests. Production passes nothing and the
+    ///   live App Group service is used.
     init(service: MobileDataService? = nil) {
-        // Fall back to an in-memory service if the App Group isn't configured yet
-        // (e.g. SwiftUI previews), so the UI always has something to render.
         if let service {
             self.service = service
         } else if let live = MobileDataService.live(appGroupIdentifier: AppConstants.appGroupIdentifier) {
             self.service = live
         } else {
-            self.service = MobileDataService(store: InMemoryDataStore(), reader: PreviewCounterReader())
-            storageUnavailable = true
+            // The App Group container is the app's only persistent storage. A nil
+            // here means the build is signed without the
+            // group.fi.mailhub.everybytecounts entitlement — a misconfiguration
+            // no runtime workaround can fix. The previous in-memory fallback hid
+            // exactly this: the app ran, appeared to save, and lost everything on
+            // the next launch. Fail loudly at startup instead so the fault can't
+            // ship unnoticed; the release pipeline's entitlement check is meant
+            // to catch it even earlier.
+            fatalError("""
+                App Group '\(AppConstants.appGroupIdentifier)' is unavailable. \
+                The app is signed without its App Group entitlement, so there is \
+                no persistent storage. Enable the App Groups capability for both \
+                bundle IDs in the Developer portal and re-sign.
+                """)
         }
         self.plan = self.service.currentState().plan
     }
@@ -82,13 +88,5 @@ final class DashboardModel: ObservableObject {
             let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
             center.add(request)
         }
-    }
-}
-
-/// Deterministic reader for previews so the UI shows believable numbers without
-/// the live counters.
-private struct PreviewCounterReader: CounterReader {
-    func read() throws -> CounterReading {
-        CounterReading(cellular: DataSize(gigabytes: 7.3), wifi: DataSize(gigabytes: 40))
     }
 }
