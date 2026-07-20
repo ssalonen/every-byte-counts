@@ -1,4 +1,5 @@
 import SwiftUI
+import Charts
 import MobileDataCore
 
 /// The headline dashboard (design §2): used / remaining / % / days left, the
@@ -13,6 +14,7 @@ struct DashboardView: View {
                     VStack(spacing: 20) {
                         RemainingRing(summary: report.summary)
                         ForecastCard(forecast: report.forecast)
+                        CumulativeCard(report: report)
                         StatsGrid(summary: report.summary)
                         EstimateDisclaimer()
                     }
@@ -102,6 +104,90 @@ private struct ForecastCard: View {
                     .font(.subheadline.bold()).foregroundStyle(.red)
                 Text(forecast.overageBasis).font(.caption).foregroundStyle(.secondary)
             }
+        }
+        .padding()
+        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 16))
+    }
+}
+
+/// Cumulative usage over the cycle with the forecast projection continued to
+/// cycle end as a dashed line in the status colour, against the cap line —
+/// the "where is this heading" picture behind the ForecastCard numbers.
+private struct CumulativeCard: View {
+    private let summary: UsageSummary
+    private let series: CumulativeUsageSeries
+
+    init(report: UsageReport) {
+        self.summary = report.summary
+        self.series = CumulativeUsageSeries(report: report)
+    }
+
+    private var statusColor: Color {
+        switch series.status {
+        case .safe: return .green
+        case .atRisk: return .orange
+        case .over: return .red
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Image(systemName: "chart.xyaxis.line")
+                Text("Cycle so far").font(.headline)
+            }
+
+            Chart {
+                ForEach(series.actual) { point in
+                    AreaMark(
+                        x: .value("Day", point.date),
+                        y: .value("GB", point.gigabytes)
+                    )
+                    .foregroundStyle(.blue.opacity(0.12))
+                }
+                ForEach(series.actual) { point in
+                    LineMark(
+                        x: .value("Day", point.date),
+                        y: .value("GB", point.gigabytes),
+                        series: .value("Series", "Used")
+                    )
+                    .foregroundStyle(by: .value("Series", "Used"))
+                    .lineStyle(StrokeStyle(lineWidth: 2))
+                }
+                ForEach(series.projected) { point in
+                    LineMark(
+                        x: .value("Day", point.date),
+                        y: .value("GB", point.gigabytes),
+                        series: .value("Series", "Projected")
+                    )
+                    .foregroundStyle(by: .value("Series", "Projected"))
+                    .lineStyle(StrokeStyle(lineWidth: 2, dash: [6, 4]))
+                }
+                if let end = series.projected.last {
+                    PointMark(
+                        x: .value("Day", end.date),
+                        y: .value("GB", end.gigabytes)
+                    )
+                    .foregroundStyle(statusColor)
+                    .annotation(position: .leading, alignment: .trailing) {
+                        Text("Projected \(Formatters.gigabytes(end.gigabytes))")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                RuleMark(y: .value("Cap", series.capGB))
+                    .foregroundStyle(.secondary)
+                    .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
+                    .annotation(position: .topLeading) {
+                        Text("Cap \(Formatters.gigabytes(series.capGB))")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+            }
+            .chartXScale(domain: summary.cycleStart...summary.cycleEnd)
+            .chartForegroundStyleScale(["Used": Color.blue, "Projected": statusColor])
+            .chartYAxisLabel("GB")
+            .frame(height: 220)
         }
         .padding()
         .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 16))
