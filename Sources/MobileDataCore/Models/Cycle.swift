@@ -20,6 +20,15 @@ public struct Cycle: Equatable, Codable, Sendable, Identifiable {
     /// Cap that was in force for this cycle (caps can change between cycles).
     public var capGBAtClose: Double?
 
+    /// Signed correction (bytes) applied on top of the measured usage for this
+    /// cycle. Set by calibrating against the carrier's own figure — the on-device
+    /// counters only see traffic from install onward, so a mid-cycle install
+    /// under-counts until corrected. `nil` means never calibrated. The correction
+    /// is folded into `totalCellular` at close and does not carry into the next
+    /// cycle (the carrier's counter resets too). Optional so state persisted
+    /// before this field existed still decodes.
+    public var manualAdjustmentCellular: Int64?
+
     public init(
         id: UUID = UUID(),
         start: Date,
@@ -27,7 +36,8 @@ public struct Cycle: Equatable, Codable, Sendable, Identifiable {
         baselineCumulativeCellular: DataSize,
         baselineCumulativeWifi: DataSize,
         totalCellular: DataSize? = nil,
-        capGBAtClose: Double? = nil
+        capGBAtClose: Double? = nil,
+        manualAdjustmentCellular: Int64? = nil
     ) {
         self.id = id
         self.start = start
@@ -36,9 +46,17 @@ public struct Cycle: Equatable, Codable, Sendable, Identifiable {
         self.baselineCumulativeWifi = baselineCumulativeWifi
         self.totalCellular = totalCellular
         self.capGBAtClose = capGBAtClose
+        self.manualAdjustmentCellular = manualAdjustmentCellular
     }
 
     public var isClosed: Bool { totalCellular != nil }
+
+    /// The counter-measured usage with this cycle's manual calibration applied,
+    /// clamped at zero (a downward calibration can never go negative).
+    public func calibratedUsage(measured: DataSize) -> DataSize {
+        let adjusted = Int64(clamping: measured.bytes) + (manualAdjustmentCellular ?? 0)
+        return adjusted > 0 ? DataSize(bytes: UInt64(adjusted)) : .zero
+    }
 
     public func contains(_ date: Date) -> Bool {
         date >= start && date < end

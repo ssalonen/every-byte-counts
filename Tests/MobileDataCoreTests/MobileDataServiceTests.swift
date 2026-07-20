@@ -108,6 +108,99 @@ final class MobileDataServiceTests: XCTestCase {
     }
     #endif
 
+    // MARK: - Calibration (mid-cycle install)
+
+    func testCalibrationAlignsMidCycleInstallWithCarrierFigure() {
+        let store = InMemoryDataStore(AppState(plan: PlanConfig(capGB: 20, cycleResetDay: 1)))
+        let reader = MockCounterReader(cellular: 0)
+        let service = makeService(reader, store: store)
+
+        // Installed Mar 10: the app has only seen 1 GB since install…
+        service.sample(now: TestDates.date(2026, 3, 10, 9))
+        reader.add(cellular: 1 * GB)
+        service.sample(now: TestDates.date(2026, 3, 12, 9))
+
+        // …but the carrier says 6 GB were used this cycle.
+        XCTAssertTrue(service.calibrate(
+            usedThisCycle: DataSize(bytes: 6 * GB), now: TestDates.date(2026, 3, 12, 10)))
+
+        let report = service.report(asOf: TestDates.date(2026, 3, 12, 12))
+        XCTAssertEqual(report.summary.used.bytes, 6 * GB)
+        XCTAssertEqual(report.summary.remaining.bytes, 14 * GB)
+
+        // New traffic keeps counting on top of the calibrated figure.
+        reader.add(cellular: 2 * GB)
+        service.sample(now: TestDates.date(2026, 3, 13, 9))
+        XCTAssertEqual(service.report(asOf: TestDates.date(2026, 3, 13, 12)).summary.used.bytes, 8 * GB)
+    }
+
+    func testCalibrationDownwardNeverGoesNegative() {
+        let store = InMemoryDataStore(AppState(plan: PlanConfig(capGB: 20, cycleResetDay: 1)))
+        let reader = MockCounterReader(cellular: 0)
+        let service = makeService(reader, store: store)
+
+        service.sample(now: TestDates.date(2026, 3, 10, 9))
+        reader.add(cellular: 3 * GB)
+        service.sample(now: TestDates.date(2026, 3, 12, 9))
+
+        // Carrier counts less than the app measured (e.g. zero-rated traffic).
+        service.calibrate(usedThisCycle: DataSize(bytes: 1 * GB), now: TestDates.date(2026, 3, 12, 10))
+        XCTAssertEqual(service.report(asOf: TestDates.date(2026, 3, 12, 12)).summary.used.bytes, 1 * GB)
+
+        // Even calibrating to zero clamps rather than underflowing.
+        service.calibrate(usedThisCycle: .zero, now: TestDates.date(2026, 3, 12, 11))
+        XCTAssertEqual(service.report(asOf: TestDates.date(2026, 3, 12, 12)).summary.used, .zero)
+    }
+
+    func testCalibrationFoldsIntoClosedCycleAndDoesNotCarryOver() {
+        let store = InMemoryDataStore(AppState(
+            plan: PlanConfig(capGB: 10, cycleResetDay: 1, costModel: .flatRate(eurPerGB: 5))
+        ))
+        let reader = MockCounterReader(cellular: 0)
+        let service = makeService(reader, store: store)
+
+        service.sample(now: TestDates.date(2026, 3, 10, 9))
+        reader.add(cellular: 1 * GB)
+        service.calibrate(usedThisCycle: DataSize(bytes: 9 * GB), now: TestDates.date(2026, 3, 20, 9))
+
+        // 3 GB more before the rollover sample → March closes at 9 + 3 = 12 GB,
+        // 2 GB over the 10 GB cap.
+        reader.add(cellular: 3 * GB)
+        service.sample(now: TestDates.date(2026, 4, 2, 9))
+
+        let history = service.cycleHistory()
+        XCTAssertEqual(history.count, 1)
+        XCTAssertEqual(history[0].total.bytes, 12 * GB)
+        XCTAssertEqual(history[0].overageGB, 2, accuracy: 1e-6)
+
+        // April starts uncalibrated: only newly measured traffic counts.
+        reader.add(cellular: 1 * GB)
+        service.sample(now: TestDates.date(2026, 4, 3, 9))
+        XCTAssertEqual(service.report(asOf: TestDates.date(2026, 4, 3, 12)).summary.used.bytes, 1 * GB)
+    }
+
+    func testCalibratedUsageDrivesAlerts() {
+        let store = InMemoryDataStore(AppState(plan: PlanConfig(capGB: 10, cycleResetDay: 1)))
+        let reader = MockCounterReader(cellular: 0)
+        let service = makeService(reader, store: store)
+
+        service.sample(now: TestDates.date(2026, 3, 10, 9))
+        // Carrier says 9 GB of the 10 GB cap are already gone → the next sample
+        // must fire the 50% and 80% thresholds.
+        service.calibrate(usedThisCycle: DataSize(bytes: 9 * GB), now: TestDates.date(2026, 3, 10, 10))
+        let result = service.sample(now: TestDates.date(2026, 3, 10, 11))
+        XCTAssertEqual(result?.pendingAlerts.map(\.threshold), [0.5, 0.8])
+    }
+
+    func testCalibrateFailsWhenCounterUnreadableOnFreshInstall() {
+        let store = InMemoryDataStore(AppState(plan: PlanConfig(capGB: 20, cycleResetDay: 1)))
+        let reader = MockCounterReader()
+        reader.shouldThrow = true
+        let service = makeService(reader, store: store)
+        XCTAssertFalse(service.calibrate(
+            usedThisCycle: DataSize(bytes: 1 * GB), now: TestDates.date(2026, 3, 10, 9)))
+    }
+
     func testForecastIncludedInReport() {
         let store = InMemoryDataStore(AppState(plan: PlanConfig(capGB: 20, cycleResetDay: 1)))
         let reader = MockCounterReader(cellular: 0)

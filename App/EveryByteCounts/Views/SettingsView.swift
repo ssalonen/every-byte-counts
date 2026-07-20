@@ -10,6 +10,8 @@ struct SettingsView: View {
     @State private var capGB: Double = 20
     @State private var resetDay: Int = 1
     @State private var eurPerGB: Double = 5
+    @State private var carrierUsedGB: Double = 0
+    @State private var didCalibrate = false
 
     var body: some View {
         NavigationStack {
@@ -28,6 +30,23 @@ struct SettingsView: View {
                         Text("Rate: \(Formatters.euros(eurPerGB))/GB")
                     }
                     Text("Flat €/GB on data over the cap.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+
+                Section("Calibrate this cycle") {
+                    HStack {
+                        Text("Used so far")
+                        Spacer()
+                        TextField("GB", value: $carrierUsedGB, format: .number.precision(.fractionLength(0...2)))
+                            .keyboardType(.decimalPad)
+                            .multilineTextAlignment(.trailing)
+                            .frame(maxWidth: 100)
+                        Text("GB").foregroundStyle(.secondary)
+                    }
+                    Button(didCalibrate ? "Calibrated ✓" : "Calibrate") {
+                        didCalibrate = model.calibrate(usedThisCycleGB: max(0, carrierUsedGB))
+                    }
+                    Text("Installed mid-cycle? Enter the usage your carrier reports for the current cycle and tracking continues from there — no need to wait for the next cycle. Applies to this cycle only.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
 
@@ -55,6 +74,10 @@ struct SettingsView: View {
         capGB = model.plan.capGB
         resetDay = model.plan.cycleResetDay
         if case let .flatRate(rate) = model.plan.costModel { eurPerGB = rate }
+        // Pre-fill with the app's current figure so the user only nudges it to
+        // match the carrier's.
+        carrierUsedGB = model.report?.summary.used.gigabytes ?? 0
+        didCalibrate = false
     }
 
     private func save() {
