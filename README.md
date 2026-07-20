@@ -15,6 +15,9 @@ account** — and presents a calibrated *estimate* of usage.
 - **Quota & remaining allowance** — configure a monthly cap (GB) and a billing
   reset day; see used / remaining / % consumed / days left, auto-resetting each
   cycle.
+- **Today's usage** — what you've spent so far *today*, measured against the
+  remaining daily budget, on the dashboard and widgets — no need to wait for the
+  cycle to finish.
 - **Day-by-day history** — daily totals for the current cycle as a bar chart.
 - **Month-by-month history** — past cycles as a trend, accumulating from install.
 - **Forecasting** — a recency-weighted *remaining daily budget* ("you can use

@@ -32,6 +32,8 @@ struct UsageWidgetView: View {
                 Text("\(Formatters.data(entry.remaining)) left").font(.headline)
                 Text("\(entry.daysRemaining) days · \(Formatters.percent(entry.fractionUsed)) used")
                     .font(.caption)
+                Text("\(Formatters.data(entry.usedToday)) today")
+                    .font(.caption2)
             }
 
         default:
@@ -46,7 +48,7 @@ struct UsageWidgetView: View {
                     .minimumScaleFactor(0.6)
                 Text("of \(Formatters.data(entry.cap)) left").font(.caption).foregroundStyle(.secondary)
                 ProgressView(value: min(1, entry.fractionUsed)).tint(tint)
-                Text("\(entry.daysRemaining) days left in cycle")
+                Text("\(Formatters.data(entry.usedToday)) today · \(entry.daysRemaining) days left")
                     .font(.caption2).foregroundStyle(.secondary)
             }
         }

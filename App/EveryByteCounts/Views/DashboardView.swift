@@ -12,6 +12,7 @@ struct DashboardView: View {
                 if let report = model.report {
                     VStack(spacing: 20) {
                         RemainingRing(summary: report.summary)
+                        TodayCard(usedToday: report.usedToday, dailyBudgetGB: report.forecast.remainingDailyBudgetGB)
                         ForecastCard(forecast: report.forecast)
                         StatsGrid(summary: report.summary)
                         EstimateDisclaimer()
@@ -58,6 +59,48 @@ private struct RemainingRing: View {
             Text("\(Formatters.data(summary.remaining)) remaining of \(Formatters.data(summary.cap))")
                 .font(.headline)
         }
+    }
+}
+
+/// Today's usage at a glance (no need to wait for the cycle to finish), measured
+/// against the forecast's recency-weighted remaining daily budget.
+private struct TodayCard: View {
+    let usedToday: DataSize
+    let dailyBudgetGB: Double
+
+    private var fractionOfBudget: Double {
+        dailyBudgetGB > 0 ? usedToday.gigabytes / dailyBudgetGB : 1
+    }
+
+    private var color: Color {
+        switch fractionOfBudget {
+        case ..<0.8: return .green
+        case ..<1.0: return .orange
+        default: return .red
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Image(systemName: "calendar")
+                Text("Today").font(.headline)
+                Spacer()
+                Text(Formatters.data(usedToday))
+                    .font(.title3.bold())
+                    .foregroundStyle(color)
+            }
+            if dailyBudgetGB > 0 {
+                ProgressView(value: min(1, fractionOfBudget)).tint(color)
+                Text("of your \(Formatters.gigabytes(dailyBudgetGB)) daily budget")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else {
+                Text("No daily budget left this cycle.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .padding()
+        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 16))
     }
 }
 
