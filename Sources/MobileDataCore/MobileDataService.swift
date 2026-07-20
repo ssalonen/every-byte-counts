@@ -94,6 +94,29 @@ public final class MobileDataService {
         }
     }
 
+    // MARK: - Calibration
+
+    /// Aligns the current cycle's usage with the carrier's own figure — the
+    /// on-device counters only see traffic from install onward, so installing
+    /// mid-cycle under-counts until the user calibrates. Stores the difference
+    /// as a signed per-cycle correction: future samples keep counting on top of
+    /// it, alerts and forecasts use the corrected figure, and the correction is
+    /// folded into the cycle's total at close without carrying into the next
+    /// cycle. Returns `false` if no billing cycle could be established (counter
+    /// unreadable on a fresh install).
+    @discardableResult
+    public func calibrate(usedThisCycle target: DataSize, now: Date = Date()) -> Bool {
+        engine.sample(now: now) // ensure a cycle is open and the counters are fresh
+        var state = store.load()
+        guard var cycle = state.currentCycle, cycle.contains(now) else { return false }
+        let measured = state.latestSnapshot?.cumulativeCellular
+            .subtractingSaturating(cycle.baselineCumulativeCellular) ?? .zero
+        cycle.manualAdjustmentCellular = Int64(clamping: target.bytes) - Int64(clamping: measured.bytes)
+        state.currentCycle = cycle
+        store.save(state)
+        return true
+    }
+
     // MARK: - Settings
 
     public func updatePlan(_ transform: (inout PlanConfig) -> Void) {

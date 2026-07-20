@@ -19,13 +19,16 @@ public struct UsageCalculator {
             bounds = calendar.cycleBounds(containing: now, resetDay: plan.cycleResetDay)
         }
 
-        // Used = latest cumulative minus the cycle baseline. If we somehow have no
+        // Used = latest cumulative minus the cycle baseline, plus any manual
+        // calibration for this cycle (mid-cycle installs under-count until the
+        // user aligns the figure with the carrier's). If we somehow have no
         // baseline yet (no sample taken this cycle), usage is zero.
         let used: DataSize
         if let cycle = state.currentCycle,
            let latest = state.latestSnapshot,
            cycle.contains(now) {
-            used = latest.cumulativeCellular.subtractingSaturating(cycle.baselineCumulativeCellular)
+            let measured = latest.cumulativeCellular.subtractingSaturating(cycle.baselineCumulativeCellular)
+            used = cycle.calibratedUsage(measured: measured)
         } else {
             used = .zero
         }

@@ -15,6 +15,10 @@ account** — and presents a calibrated *estimate* of usage.
 - **Quota & remaining allowance** — configure a monthly cap (GB) and a billing
   reset day; see used / remaining / % consumed / days left, auto-resetting each
   cycle.
+- **Mid-cycle calibration** — installed partway through a billing cycle? Enter
+  the usage your carrier reports so far and the app counts on from that figure —
+  totals, forecast, overage cost and alerts are all corrected, no need to wait
+  for the next cycle to get accurate numbers.
 - **Day-by-day history** — daily totals for the current cycle as a bar chart.
 - **Month-by-month history** — past cycles as a trend, accumulating from install.
 - **Forecasting** — a recency-weighted *remaining daily budget* ("you can use
@@ -31,7 +35,9 @@ account** — and presents a calibrated *estimate* of usage.
 The interface counters are whole-device and cumulative-since-boot, so: usage is a
 few-percent **estimate** vs. the carrier's billing; it **can't** be broken down
 per-app or separate hotspot/tethering traffic; and history only accumulates
-**from install onward**. These are permanent iOS constraints (design §1/§3).
+**from install onward** (the current cycle's *total* can be calibrated to the
+carrier's figure, but per-day bars still start at install). These are permanent
+iOS constraints (design §1/§3).
 
 ---
 

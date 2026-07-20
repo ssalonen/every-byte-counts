@@ -129,9 +129,12 @@ public final class SamplingEngine {
             guard now >= current.end else { return false } // still inside the cycle
 
             // Close the finished cycle. Usage between its end and this sample is
-            // attributed to the old cycle (accepted §7 inaccuracy).
+            // attributed to the old cycle (accepted §7 inaccuracy). Any manual
+            // calibration is folded into the final total here; the new cycle
+            // starts uncalibrated because the carrier's counter resets too.
             var closed = current
-            closed.totalCellular = cumulativeCellular.subtractingSaturating(current.baselineCumulativeCellular)
+            closed.totalCellular = closed.calibratedUsage(
+                measured: cumulativeCellular.subtractingSaturating(current.baselineCumulativeCellular))
             closed.capGBAtClose = state.plan.capGB
             state.closedCycles.append(closed)
         }
@@ -148,7 +151,8 @@ public final class SamplingEngine {
 
     private func evaluateAlerts(state: inout AppState, now: Date) -> [PendingAlert] {
         guard let cycle = state.currentCycle, let latest = state.snapshots.last else { return [] }
-        let used = latest.cumulativeCellular.subtractingSaturating(cycle.baselineCumulativeCellular)
+        let measured = latest.cumulativeCellular.subtractingSaturating(cycle.baselineCumulativeCellular)
+        let used = cycle.calibratedUsage(measured: measured)
         let fraction = state.plan.cap.bytes == 0 ? 0 : Double(used.bytes) / Double(state.plan.cap.bytes)
 
         let result = alertEvaluator.evaluate(

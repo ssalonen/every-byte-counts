@@ -51,6 +51,16 @@ final class DashboardModel: ObservableObject {
         WidgetCenter.shared.reloadAllTimelines()
     }
 
+    /// Align this cycle's usage with the carrier-reported figure (e.g. after a
+    /// mid-cycle install). Returns whether the calibration could be applied.
+    @discardableResult
+    func calibrate(usedThisCycleGB: Double) -> Bool {
+        let applied = service.calibrate(usedThisCycle: DataSize(gigabytes: usedThisCycleGB))
+        refresh()
+        WidgetCenter.shared.reloadAllTimelines()
+        return applied
+    }
+
     func requestNotificationPermission() {
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
     }
