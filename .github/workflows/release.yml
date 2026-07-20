@@ -85,12 +85,16 @@ jobs:
           APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
           APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
           APP_STORE_CONNECT_API_KEY_P8: ${{ secrets.APP_STORE_CONNECT_API_KEY_P8 }}
+          APPLE_DIST_CERT_P12_BASE64: ${{ secrets.APPLE_DIST_CERT_P12_BASE64 }}
+          APPLE_DIST_CERT_PASSWORD: ${{ secrets.APPLE_DIST_CERT_PASSWORD }}
         run: |
           missing=()
           [ -n "$APPLE_TEAM_ID" ]                || missing+=(APPLE_TEAM_ID)
           [ -n "$APP_STORE_CONNECT_KEY_ID" ]     || missing+=(APP_STORE_CONNECT_KEY_ID)
           [ -n "$APP_STORE_CONNECT_ISSUER_ID" ]  || missing+=(APP_STORE_CONNECT_ISSUER_ID)
           [ -n "$APP_STORE_CONNECT_API_KEY_P8" ] || missing+=(APP_STORE_CONNECT_API_KEY_P8)
+          [ -n "$APPLE_DIST_CERT_P12_BASE64" ]   || missing+=(APPLE_DIST_CERT_P12_BASE64)
+          [ -n "$APPLE_DIST_CERT_PASSWORD" ]     || missing+=(APPLE_DIST_CERT_PASSWORD)
           if [ "${#missing[@]}" -gt 0 ]; then
             echo "::error::Missing secrets: ${missing[*]}. Add them under Settings → Secrets and variables → Actions; if this run came through workflow_call, ensure the caller uses 'secrets: inherit'."
             exit 1
@@ -109,12 +113,46 @@ jobs:
           printf '%s' "$APP_STORE_CONNECT_API_KEY_P8" > "$AUTH_KEY_PATH"
           echo "AUTH_KEY_PATH=$AUTH_KEY_PATH" >> "$GITHUB_ENV"
 
-      # -allowProvisioningUpdates + the API key let Xcode fetch/create the
-      # distribution certificate and App Store provisioning profiles itself
-      # (requires the key to have the "Developer" role or higher) — no manual
-      # .p12/.mobileprovision export or base64 secrets to maintain or rotate.
-      # CURRENT_PROJECT_VERSION uses the run number so build numbers are always
-      # unique and monotonically increasing across uploads of the same version.
+      # Distribution signing uses a locally imported Apple Distribution
+      # certificate (.p12 secret) in a throwaway keychain. Cloud-MANAGED
+      # distribution certificates would need an Admin-role API key ("Cloud
+      # signing permission error" otherwise); with the cert present locally,
+      # automatic signing uses it and the App Manager key only has to
+      # create/download provisioning profiles, which it is allowed to do.
+      # The keychain is deleted in a post step and the runner is ephemeral.
+      - name: Install distribution certificate into temp keychain
+        env:
+          APPLE_DIST_CERT_P12_BASE64: ${{ secrets.APPLE_DIST_CERT_P12_BASE64 }}
+          APPLE_DIST_CERT_PASSWORD: ${{ secrets.APPLE_DIST_CERT_PASSWORD }}
+        run: |
+          KEYCHAIN_PATH="$RUNNER_TEMP/signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(uuidgen)"
+          P12_PATH="$RUNNER_TEMP/dist.p12"
+
+          printf '%s' "$APPLE_DIST_CERT_P12_BASE64" | base64 --decode > "$P12_PATH"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$P12_PATH" -k "$KEYCHAIN_PATH" \
+            -P "$APPLE_DIST_CERT_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/security -f pkcs12
+          # Allow codesign to use the key without a UI password prompt.
+          security set-key-partition-list -S apple-tool:,apple: \
+            -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH" > /dev/null
+          security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain-db
+          rm -f "$P12_PATH"
+
+          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+          # Sanity check: fail here with a readable message rather than deep
+          # inside xcodebuild if the p12 didn't contain a signing identity.
+          security find-identity -v -p codesigning "$KEYCHAIN_PATH" | grep -q "Apple Distribution" \
+            || { echo "::error::No 'Apple Distribution' identity found in the imported .p12"; exit 1; }
+
+      # The API key still handles development signing during archive and the
+      # provisioning profile fetch/creation at export. CURRENT_PROJECT_VERSION
+      # uses the run number so build numbers are always unique and
+      # monotonically increasing across uploads of the same version.
       - name: Build archive (App Store signed)
         env:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
@@ -169,6 +207,13 @@ jobs:
             -authenticationKeyPath "$AUTH_KEY_PATH" \
             -authenticationKeyID "$APP_STORE_CONNECT_KEY_ID" \
             -authenticationKeyIssuerID "$APP_STORE_CONNECT_ISSUER_ID"
+
+      - name: Delete temp keychain
+        if: always()
+        run: |
+          if [ -n "${KEYCHAIN_PATH:-}" ] && [ -f "$KEYCHAIN_PATH" ]; then
+            security delete-keychain "$KEYCHAIN_PATH"
+          fi
 
       - name: Commit project.yml version bump
         run: |
