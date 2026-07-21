@@ -149,13 +149,21 @@ jobs:
           security find-identity -v -p codesigning "$KEYCHAIN_PATH" | grep -q "Apple Distribution" \
             || { echo "::error::No 'Apple Distribution' identity found in the imported .p12"; exit 1; }
 
-      # Archive WITHOUT signing; all signing happens at export with the manually
-      # minted App Store profiles below. An unsigned archive contacts no portal
-      # and touches no certificates or profiles, so it can't create or exhaust
-      # the account's certificates. CURRENT_PROJECT_VERSION uses the run number
-      # so build numbers are unique and increase across uploads of the same
-      # version.
-      - name: Build archive (unsigned)
+      # Archive with AD-HOC signing (CODE_SIGN_IDENTITY="-"), not real signing.
+      # Ad-hoc needs no certificate and contacts no portal, so — like the
+      # previous unsigned archive — it can't create or exhaust the account's
+      # distribution certificates (the cert-cap trap that motivated dropping
+      # real signing here). The crucial difference: an ad-hoc signature still
+      # runs the entitlements step, so each binary in the archive carries its
+      # App Group entitlement. A fully unsigned archive (CODE_SIGNING_ALLOWED=NO)
+      # embeds NO entitlements, and `-exportArchive` re-signs using the app's
+      # own entitlements intersected with the profile's — an empty "desired" set
+      # means the App Group is silently stripped at export. That is exactly how
+      # 1.3.6 (5) shipped without the group and crashed on launch. Ad-hoc keeps
+      # the entitlement present so the export re-sign preserves it.
+      # CURRENT_PROJECT_VERSION uses the run number so build numbers are unique
+      # and increase across uploads of the same version.
+      - name: Build archive (ad-hoc signed so entitlements are embedded)
         run: |
           xcodebuild archive \
             -project EveryByteCounts.xcodeproj \
@@ -163,8 +171,11 @@ jobs:
             -configuration Release \
             -destination 'generic/platform=iOS' \
             -archivePath "$RUNNER_TEMP/EveryByteCounts.xcarchive" \
-            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGN_STYLE=Manual \
+            PROVISIONING_PROFILE_SPECIFIER="" \
             CODE_SIGNING_REQUIRED=NO \
+            AD_HOC_CODE_SIGNING_ALLOWED=YES \
             MARKETING_VERSION="${VERSION_NUM}" \
             CURRENT_PROJECT_VERSION="${{ github.run_number }}"
 
@@ -192,9 +203,9 @@ jobs:
       # entitlement is embedded in both the app and the widget BEFORE anything
       # ships. exportArchive fails if a profile doesn't grant a requested
       # capability, and inspecting the binary also catches the inverse — an
-      # entitlements file that stopped requesting the group. The IPA is
-      # inspected because the archive is unsigned; a failure here stops the
-      # release before the upload step runs.
+      # entitlements file that stopped requesting the group. The exported IPA
+      # (not the ad-hoc-signed archive) is what actually ships, so that is what
+      # we inspect; a failure here stops the release before the upload step runs.
       - name: Export signed IPA & verify App Group entitlement
         env:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
