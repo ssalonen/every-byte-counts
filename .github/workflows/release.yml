@@ -172,6 +172,38 @@ jobs:
             --bundle-id fi.mailhub.everybytecounts \
             --bundle-id fi.mailhub.everybytecounts.widget
 
+      # Diagnostic: decode each installed provisioning profile and print the
+      # Entitlements it authorizes. v1.3.8 signed cleanly against these profiles
+      # yet the app shipped without com.apple.security.application-groups — the
+      # signed binary carried only the profile's generic entitlements. A profile
+      # is minted fresh here from the App ID, so this shows the ground truth:
+      #   - App Groups ABSENT here  -> the App ID isn't handing the group to the
+      #     profile (App Groups capability enabled but the specific group not
+      #     associated, or the ASC API not including it) — a portal/App-ID fix.
+      #   - App Groups PRESENT here -> a deeper signing/export bug to chase.
+      # Read-only; it never fails the build (always exits 0).
+      - name: Log minted profile entitlements (diagnostic)
+        run: |
+          shopt -s nullglob
+          found=0
+          for f in "$HOME/Library/MobileDevice/Provisioning Profiles/"*.mobileprovision; do
+            found=1
+            security cms -D -i "$f" -o "$RUNNER_TEMP/pp.plist" 2>/dev/null || continue
+            NAME=$(/usr/libexec/PlistBuddy -c 'Print :Name' "$RUNNER_TEMP/pp.plist" 2>/dev/null || echo '?')
+            echo "----- profile: $NAME -----"
+            /usr/libexec/PlistBuddy -x -c 'Print :Entitlements' "$RUNNER_TEMP/pp.plist" 2>/dev/null \
+              || echo "(no Entitlements dict)"
+            if /usr/libexec/PlistBuddy -c 'Print :Entitlements:com.apple.security.application-groups' \
+                 "$RUNNER_TEMP/pp.plist" >/dev/null 2>&1; then
+              echo ">>> App Group: PRESENT"
+            else
+              echo ">>> App Group: ABSENT"
+            fi
+            echo "--------------------------------"
+          done
+          [ "$found" = 1 ] || echo "No installed provisioning profiles found."
+          exit 0
+
       # Archive with real MANUAL signing — the standard Xcode "Archive" flow —
       # using the Apple Distribution certificate already imported into the temp
       # keychain and the profiles minted just above. This reuses one existing
