@@ -188,6 +188,64 @@ jobs:
             --bundle-id fi.mailhub.everybytecounts \
             --bundle-id fi.mailhub.everybytecounts.widget
 
+      # Export a signed IPA to disk (no upload) and confirm the App Group
+      # entitlement is embedded in both the app and the widget BEFORE anything
+      # ships. exportArchive fails if a profile doesn't grant a requested
+      # capability, and inspecting the binary also catches the inverse — an
+      # entitlements file that stopped requesting the group. The IPA is
+      # inspected because the archive is unsigned; a failure here stops the
+      # release before the upload step runs.
+      - name: Export signed IPA & verify App Group entitlement
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+        run: |
+          cat > "$RUNNER_TEMP/ExportOptions-verify.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>method</key>
+              <string>app-store-connect</string>
+              <key>teamID</key>
+              <string>${APPLE_TEAM_ID}</string>
+              <key>signingStyle</key>
+              <string>manual</string>
+              <key>signingCertificate</key>
+              <string>Apple Distribution</string>
+              <key>provisioningProfiles</key>
+              <dict>
+                  <key>fi.mailhub.everybytecounts</key>
+                  <string>CI AppStore fi.mailhub.everybytecounts</string>
+                  <key>fi.mailhub.everybytecounts.widget</key>
+                  <string>CI AppStore fi.mailhub.everybytecounts.widget</string>
+              </dict>
+              <key>destination</key>
+              <string>export</string>
+          </dict>
+          </plist>
+          PLIST
+
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/EveryByteCounts.xcarchive" \
+            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions-verify.plist" \
+            -exportPath "$RUNNER_TEMP/verify-export" \
+            -authenticationKeyPath "$AUTH_KEY_PATH" \
+            -authenticationKeyID "$APP_STORE_CONNECT_KEY_ID" \
+            -authenticationKeyIssuerID "$APP_STORE_CONNECT_ISSUER_ID"
+
+          IPA=$(ls "$RUNNER_TEMP/verify-export/"*.ipa | head -1)
+          unzip -qo "$IPA" -d "$RUNNER_TEMP/verify-ipa"
+          APP=$(ls -d "$RUNNER_TEMP/verify-ipa/Payload/"*.app | head -1)
+          for BUNDLE in "$APP" "$APP/PlugIns/"*.appex; do
+            if ! codesign -d --entitlements - "$BUNDLE" 2>/dev/null | grep -q "group.fi.mailhub.everybytecounts"; then
+              echo "::error::$(basename "$BUNDLE") is signed WITHOUT the group.fi.mailhub.everybytecounts App Group entitlement — persisted state would be lost on every app restart. Enable the App Groups capability (with this group) for both bundle IDs in the Apple Developer portal so the minted profiles include it."
+              exit 1
+            fi
+            echo "OK: $(basename "$BUNDLE") carries the App Group entitlement"
+          done
+
       # destination=upload makes xcodebuild push the exported IPA straight to
       # App Store Connect in the same step — no separate altool/Transporter
       # call. Signing is manual: the certificate comes from the temp keychain,
@@ -233,32 +291,17 @@ jobs:
             -authenticationKeyID "$APP_STORE_CONNECT_KEY_ID" \
             -authenticationKeyIssuerID "$APP_STORE_CONNECT_ISSUER_ID"
 
-      # Confirm the signed app and widget both carry the App Group entitlement.
-      # A build without it runs but has no persistent storage — every setting
-      # resets on relaunch. exportArchive already fails if a profile doesn't
-      # grant the capability, so this is a positive check on the shipped binary
-      # rather than the only guard. The exported IPA is inspected because the
-      # archive is unsigned.
-      - name: Verify App Group entitlement in exported IPA
-        run: |
-          IPA=$(ls "$RUNNER_TEMP/export/"*.ipa | head -1)
-          EXTRACT="$RUNNER_TEMP/ipa_extract"
-          unzip -qo "$IPA" -d "$EXTRACT"
-          APP=$(ls -d "$EXTRACT/Payload/"*.app | head -1)
-          for BUNDLE in "$APP" "$APP/PlugIns/EveryByteCountsWidgetExtension.appex"; do
-            if ! codesign -d --entitlements - "$BUNDLE" 2>/dev/null | grep -q "group.fi.mailhub.everybytecounts"; then
-              echo "::error::$(basename "$BUNDLE") is signed WITHOUT the group.fi.mailhub.everybytecounts App Group entitlement — persisted state would be lost on every app restart. Enable the App Groups capability (with this group) for both bundle IDs in the Apple Developer portal so the minted profiles include it."
-              exit 1
-            fi
-            echo "OK: $(basename "$BUNDLE") carries the App Group entitlement"
-          done
-
-      - name: Delete temp keychain
+      # Tear down every sensitive artifact this job wrote to the runner: the
+      # signing keychain, the ASC API .p8 key, and the dumped certificate PEM.
+      # always() so a failure earlier in the job still cleans up. The runner is
+      # ephemeral, so this is defense-in-depth, not the only safeguard.
+      - name: Delete signing material
         if: always()
         run: |
           if [ -n "${KEYCHAIN_PATH:-}" ] && [ -f "$KEYCHAIN_PATH" ]; then
             security delete-keychain "$KEYCHAIN_PATH"
           fi
+          rm -rf "$RUNNER_TEMP/private_keys" "$RUNNER_TEMP/dist-cert.pem"
 
       - name: Commit project.yml version bump
         run: |
