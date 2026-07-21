@@ -291,12 +291,17 @@ jobs:
             -authenticationKeyID "$APP_STORE_CONNECT_KEY_ID" \
             -authenticationKeyIssuerID "$APP_STORE_CONNECT_ISSUER_ID"
 
-      - name: Delete temp keychain
+      # Tear down every sensitive artifact this job wrote to the runner: the
+      # signing keychain, the ASC API .p8 key, and the dumped certificate PEM.
+      # always() so a failure earlier in the job still cleans up. The runner is
+      # ephemeral, so this is defense-in-depth, not the only safeguard.
+      - name: Delete signing material
         if: always()
         run: |
           if [ -n "${KEYCHAIN_PATH:-}" ] && [ -f "$KEYCHAIN_PATH" ]; then
             security delete-keychain "$KEYCHAIN_PATH"
           fi
+          rm -rf "$RUNNER_TEMP/private_keys" "$RUNNER_TEMP/dist-cert.pem"
 
       - name: Commit project.yml version bump
         run: |
