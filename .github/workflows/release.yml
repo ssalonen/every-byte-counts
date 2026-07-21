@@ -149,30 +149,14 @@ jobs:
           security find-identity -v -p codesigning "$KEYCHAIN_PATH" | grep -q "Apple Distribution" \
             || { echo "::error::No 'Apple Distribution' identity found in the imported .p12"; exit 1; }
 
-      # Archive WITHOUT signing; all signing happens at export with the manually
-      # minted App Store profiles below. An unsigned archive contacts no portal
-      # and touches no certificates or profiles, so it can't create or exhaust
-      # the account's certificates. CURRENT_PROJECT_VERSION uses the run number
-      # so build numbers are unique and increase across uploads of the same
-      # version.
-      - name: Build archive (unsigned)
-        run: |
-          xcodebuild archive \
-            -project EveryByteCounts.xcodeproj \
-            -scheme EveryByteCounts \
-            -configuration Release \
-            -destination 'generic/platform=iOS' \
-            -archivePath "$RUNNER_TEMP/EveryByteCounts.xcarchive" \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO \
-            MARKETING_VERSION="${VERSION_NUM}" \
-            CURRENT_PROJECT_VERSION="${{ github.run_number }}"
-
-      # exportArchive with automatic signing refuses to mint missing App Store
-      # profiles without cloud signing (Admin-only). Mint them ourselves via
-      # the official ASC API instead — App Manager is enough for that — and
-      # export with manual signing below. Fixed profile names + delete-and-
-      # recreate make this idempotent; a rotated certificate self-heals.
+      # Mint the App Store provisioning profiles BEFORE the archive, because the
+      # archive is signed manually against them (below). exportArchive with
+      # automatic signing refuses to mint missing App Store profiles without
+      # cloud signing (Admin-only); minting them ourselves via the official ASC
+      # API needs only App Manager. Fixed profile names + delete-and-recreate
+      # make this idempotent; a rotated certificate self-heals. The names here
+      # must match PROVISIONING_PROFILE_SPECIFIER in project.yml and the
+      # provisioningProfiles map in the export options below.
       - name: Create & install App Store provisioning profiles
         env:
           APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
@@ -188,12 +172,39 @@ jobs:
             --bundle-id fi.mailhub.everybytecounts \
             --bundle-id fi.mailhub.everybytecounts.widget
 
+      # Archive with real MANUAL signing — the standard Xcode "Archive" flow —
+      # using the Apple Distribution certificate already imported into the temp
+      # keychain and the profiles minted just above. This reuses one existing
+      # certificate, so it creates nothing against the portal and can never hit
+      # the certificate cap (the trap that automatic signing here fell into).
+      # Signing the archive natively is what makes each binary carry its App
+      # Group entitlement end-to-end: the earlier unsigned archive embedded no
+      # entitlements, so exportArchive re-signed with an empty desired set and
+      # silently stripped the App Group — how 1.3.6 (5) shipped broken and
+      # crashed on launch. CODE_SIGN_IDENTITY and the per-target profile names
+      # live in project.yml (Release config); DEVELOPMENT_TEAM is injected here
+      # so it stays out of the committed project. CURRENT_PROJECT_VERSION uses
+      # the run number so build numbers are unique and increase across uploads.
+      - name: Build archive (App Store signed)
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          xcodebuild archive \
+            -project EveryByteCounts.xcodeproj \
+            -scheme EveryByteCounts \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/EveryByteCounts.xcarchive" \
+            DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
+            MARKETING_VERSION="${VERSION_NUM}" \
+            CURRENT_PROJECT_VERSION="${{ github.run_number }}"
+
       # Export a signed IPA to disk (no upload) and confirm the App Group
       # entitlement is embedded in both the app and the widget BEFORE anything
       # ships. exportArchive fails if a profile doesn't grant a requested
       # capability, and inspecting the binary also catches the inverse — an
-      # entitlements file that stopped requesting the group. The IPA is
-      # inspected because the archive is unsigned; a failure here stops the
+      # entitlements file that stopped requesting the group. The exported IPA is
+      # what actually ships, so that is what we inspect; a failure here stops the
       # release before the upload step runs.
       - name: Export signed IPA & verify App Group entitlement
         env:
