@@ -150,13 +150,11 @@ jobs:
             || { echo "::error::No 'Apple Distribution' identity found in the imported .p12"; exit 1; }
 
       # Archive WITHOUT signing; all signing happens at export with the manually
-      # minted App Store profiles below. Archiving unsigned is what keeps this
-      # release green: automatic signing here made xcodebuild reach out to the
-      # portal (-allowProvisioningUpdates) to create a development certificate
-      # on every run, which accumulated until the account hit Apple's
-      # certificate cap and every archive failed. An unsigned archive touches no
-      # certificates or profiles. CURRENT_PROJECT_VERSION uses the run number so
-      # build numbers are unique and increase across uploads of the same version.
+      # minted App Store profiles below. An unsigned archive contacts no portal
+      # and touches no certificates or profiles, so it can't create or exhaust
+      # the account's certificates. CURRENT_PROJECT_VERSION uses the run number
+      # so build numbers are unique and increase across uploads of the same
+      # version.
       - name: Build archive (unsigned)
         run: |
           xcodebuild archive \
@@ -239,8 +237,8 @@ jobs:
       # A build without it runs but has no persistent storage — every setting
       # resets on relaunch. exportArchive already fails if a profile doesn't
       # grant the capability, so this is a positive check on the shipped binary
-      # rather than the only guard. Inspecting the exported IPA (not the now-
-      # unsigned archive) is what makes the check meaningful.
+      # rather than the only guard. The exported IPA is inspected because the
+      # archive is unsigned.
       - name: Verify App Group entitlement in exported IPA
         run: |
           IPA=$(ls "$RUNNER_TEMP/export/"*.ipa | head -1)
