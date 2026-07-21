@@ -239,11 +239,20 @@ jobs:
           unzip -qo "$IPA" -d "$RUNNER_TEMP/verify-ipa"
           APP=$(ls -d "$RUNNER_TEMP/verify-ipa/Payload/"*.app | head -1)
           for BUNDLE in "$APP" "$APP/PlugIns/"*.appex; do
-            if ! codesign -d --entitlements - "$BUNDLE" 2>/dev/null | grep -q "group.fi.mailhub.everybytecounts"; then
-              echo "::error::$(basename "$BUNDLE") is signed WITHOUT the group.fi.mailhub.everybytecounts App Group entitlement — persisted state would be lost on every app restart. Enable the App Groups capability (with this group) for both bundle IDs in the Apple Developer portal so the minted profiles include it."
+            NAME=$(basename "$BUNDLE")
+            # Dump the entitlements that were actually signed into the binary so
+            # the log shows exactly what shipped — the difference between a
+            # stripped App Group (portal capability missing) and a false alarm.
+            ENT="$RUNNER_TEMP/entitlements-$NAME.plist"
+            codesign -d --entitlements :- "$BUNDLE" > "$ENT" 2>/dev/null || true
+            echo "----- entitlements: $NAME -----"
+            plutil -p "$ENT" 2>/dev/null || cat "$ENT"
+            echo "--------------------------------"
+            if ! grep -q "group.fi.mailhub.everybytecounts" "$ENT"; then
+              echo "::error::$NAME is signed WITHOUT the group.fi.mailhub.everybytecounts App Group entitlement — persisted state would be lost on every app restart. In the Apple Developer portal, create the App Group 'group.fi.mailhub.everybytecounts' and enable the App Groups capability with that group on BOTH fi.mailhub.everybytecounts and fi.mailhub.everybytecounts.widget, so the minted profiles include it."
               exit 1
             fi
-            echo "OK: $(basename "$BUNDLE") carries the App Group entitlement"
+            echo "OK: $NAME carries the App Group entitlement"
           done
 
       # destination=upload makes xcodebuild push the exported IPA straight to
