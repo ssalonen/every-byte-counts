@@ -262,6 +262,25 @@ jobs:
               -configuration Release -showBuildSettings 2>/dev/null \
               | grep -E "CODE_SIGN_ENTITLEMENTS|PRODUCT_BUNDLE_IDENTIFIER" || echo "(none)"
           done
+          # The generated entitlements Xcode actually fed to codesign. If these
+          # .xcent files CONTAIN application-groups, ProcessProductPackaging did
+          # its job and the drop is at codesign/archive; if they LACK it, the
+          # packaging step itself reconciled the group away.
+          echo "===== generated .xcent (fed to codesign) ====="
+          find "$HOME/Library/Developer/Xcode/DerivedData" -name '*.xcent' 2>/dev/null | while read -r f; do
+            echo "--- $f ---"
+            plutil -p "$f" 2>/dev/null || cat "$f"
+          done
+          echo "===== generated DerivedSources/Entitlements.plist ====="
+          find "$HOME/Library/Developer/Xcode/DerivedData" -path '*DerivedSources*' -name 'Entitlements.plist' 2>/dev/null | while read -r f; do
+            echo "--- $f ---"
+            plutil -p "$f" 2>/dev/null || cat "$f"
+          done
+          echo "===== .xcent inside the archive ====="
+          find "$RUNNER_TEMP/EveryByteCounts.xcarchive" -name '*.xcent' 2>/dev/null | while read -r f; do
+            echo "--- $f ---"
+            plutil -p "$f" 2>/dev/null || cat "$f"
+          done
           exit 0
 
       # Export a signed IPA to disk (no upload) and confirm the App Group
