@@ -135,7 +135,7 @@ These need a real macOS host and an Apple portal login, so they can't run in thi
 environment — the config will be ready and these are the only manual steps:
 
 1. Create a **private git repo** for signing material, named for the Apple
-   Developer **team**, not this app — e.g. `ssalonen/mailhub-ios-signing`. One
+   Developer **team**, not this app — e.g. `ssalonen/ios-signing`. One
    shared repo serves every app under the same team: the distribution cert is
    per-team (and capped by Apple), so match stores it once and reuses it, while
    profiles are namespaced by bundle ID. A future app just adds its bundle IDs to
