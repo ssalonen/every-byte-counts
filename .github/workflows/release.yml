@@ -209,14 +209,16 @@ jobs:
       # keychain and the profiles minted just above. This reuses one existing
       # certificate, so it creates nothing against the portal and can never hit
       # the certificate cap (the trap that automatic signing here fell into).
-      # Signing the archive natively is what makes each binary carry its App
-      # Group entitlement end-to-end: the earlier unsigned archive embedded no
-      # entitlements, so exportArchive re-signed with an empty desired set and
-      # silently stripped the App Group — how 1.3.6 (5) shipped broken and
-      # crashed on launch. CODE_SIGN_IDENTITY and the per-target profile names
-      # live in project.yml (Release config); DEVELOPMENT_TEAM is injected here
-      # so it stays out of the committed project. CURRENT_PROJECT_VERSION uses
-      # the run number so build numbers are unique and increase across uploads.
+      # CODE_SIGN_IDENTITY and the per-target profile names live in project.yml
+      # (Release config); DEVELOPMENT_TEAM is injected here so it stays out of
+      # the committed project. CURRENT_PROJECT_VERSION uses the run number so
+      # build numbers are unique and increase across uploads.
+      #
+      # NOTE: Xcode strips com.apple.security.application-groups while generating
+      # the .xcent here (the generated project declares the entitlements FILE but
+      # not the App Groups capability, so the packaging step reconciles the group
+      # away — proven by dumping the archived binaries and the .xcent). The next
+      # step puts it back; see there.
       - name: Build archive (App Store signed)
         env:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
@@ -231,57 +233,54 @@ jobs:
             MARKETING_VERSION="${VERSION_NUM}" \
             CURRENT_PROJECT_VERSION="${{ github.run_number }}"
 
-      # Diagnostic: the minted profiles authorize the App Group and the exported
-      # binary still lacks it, so the group is dropped somewhere between build and
-      # export. Dump what the ARCHIVED app/widget were actually signed with
-      # (before -exportArchive re-signs) and the CODE_SIGN_ENTITLEMENTS each
-      # target resolved to. This splits the two possibilities:
-      #   - archive HAS the group  -> exportArchive strips it (fix the export).
-      #   - archive LACKS the group -> the app never requested it; CODE_SIGN_
-      #     ENTITLEMENTS isn't the repo .entitlements file (fix project.yml).
-      # Read-only; always exits 0.
-      - name: Dump archived app entitlements (diagnostic)
+      # Xcode dropped the App Group from the archived binaries (see the note on
+      # the archive step). Everything upstream is correct — the entitlements
+      # files request the group, the minted profiles authorise exactly it — but
+      # Xcode 26's packaging reconciles it away because the generated project
+      # never declares the App Groups capability, only the entitlements file.
+      # Rather than fight the packaging step, re-sign each archived binary with
+      # the group merged back into the entitlements it already carries.
+      #
+      # Why this survives to the shipped IPA: `xcodebuild -exportArchive`
+      # preserves entitlements that are already present in a signature (it only
+      # re-derives from profile defaults for code left unsigned in the archive).
+      # Same behaviour, and the same re-sign-with-entitlements workaround, is
+      # documented in tauri-apps/tauri#15663:
+      #   https://github.com/tauri-apps/tauri/issues/15663
+      #
+      # Sign the widget before the app (inside-out); reuse the Apple Distribution
+      # identity from the temp keychain. The embedded provisioning profile is
+      # left in place. The verify step below still gates the release, so a bad
+      # re-sign fails loudly instead of shipping.
+      - name: Force the App Group entitlement into the archived binaries
         run: |
+          set -euo pipefail
+          GROUP="group.fi.mailhub.everybytecounts"
+          IDENTITY="Apple Distribution"
           ARCH="$RUNNER_TEMP/EveryByteCounts.xcarchive/Products/Applications/EveryByteCounts.app"
-          for B in "$ARCH" "$ARCH/PlugIns/"*.appex; do
-            [ -e "$B" ] || continue
-            echo "----- archived: $(basename "$B") -----"
-            codesign -d --entitlements :- "$B" 2>/dev/null | plutil -p - 2>/dev/null \
-              || echo "(could not read entitlements)"
-            if codesign -d --entitlements :- "$B" 2>/dev/null | grep -q "group.fi.mailhub.everybytecounts"; then
-              echo ">>> App Group in ARCHIVE: PRESENT"
-            else
-              echo ">>> App Group in ARCHIVE: ABSENT"
-            fi
-            echo "--------------------------------"
+
+          resign() {
+            bundle="$1"
+            ent="$RUNNER_TEMP/resign-$(basename "$bundle").plist"
+            # Start from the entitlements Xcode already signed in (application-
+            # identifier, team-identifier, get-task-allow, beta-reports-active)
+            # so those are kept and only the missing App Group is added.
+            codesign -d --entitlements :- "$bundle" > "$ent" 2>/dev/null
+            plutil -convert xml1 "$ent"
+            /usr/libexec/PlistBuddy -c "Delete :com.apple.security.application-groups" "$ent" 2>/dev/null || true
+            /usr/libexec/PlistBuddy -c "Add :com.apple.security.application-groups array" "$ent"
+            /usr/libexec/PlistBuddy -c "Add :com.apple.security.application-groups:0 string $GROUP" "$ent"
+            codesign --force --sign "$IDENTITY" --keychain "$KEYCHAIN_PATH" \
+              --entitlements "$ent" "$bundle"
+            echo "re-signed $(basename "$bundle"); entitlements now:"
+            codesign -d --entitlements :- "$bundle" 2>/dev/null | plutil -p -
+          }
+
+          # Nested code (the widget) must be signed before the containing app.
+          for EXT in "$ARCH/PlugIns/"*.appex; do
+            [ -e "$EXT" ] && resign "$EXT"
           done
-          echo "===== resolved CODE_SIGN_ENTITLEMENTS ====="
-          for T in EveryByteCounts EveryByteCountsWidgetExtension; do
-            echo "--- target: $T ---"
-            xcodebuild -project EveryByteCounts.xcodeproj -target "$T" \
-              -configuration Release -showBuildSettings 2>/dev/null \
-              | grep -E "CODE_SIGN_ENTITLEMENTS|PRODUCT_BUNDLE_IDENTIFIER" || echo "(none)"
-          done
-          # The generated entitlements Xcode actually fed to codesign. If these
-          # .xcent files CONTAIN application-groups, ProcessProductPackaging did
-          # its job and the drop is at codesign/archive; if they LACK it, the
-          # packaging step itself reconciled the group away.
-          echo "===== generated .xcent (fed to codesign) ====="
-          find "$HOME/Library/Developer/Xcode/DerivedData" -name '*.xcent' 2>/dev/null | while read -r f; do
-            echo "--- $f ---"
-            plutil -p "$f" 2>/dev/null || cat "$f"
-          done
-          echo "===== generated DerivedSources/Entitlements.plist ====="
-          find "$HOME/Library/Developer/Xcode/DerivedData" -path '*DerivedSources*' -name 'Entitlements.plist' 2>/dev/null | while read -r f; do
-            echo "--- $f ---"
-            plutil -p "$f" 2>/dev/null || cat "$f"
-          done
-          echo "===== .xcent inside the archive ====="
-          find "$RUNNER_TEMP/EveryByteCounts.xcarchive" -name '*.xcent' 2>/dev/null | while read -r f; do
-            echo "--- $f ---"
-            plutil -p "$f" 2>/dev/null || cat "$f"
-          done
-          exit 0
+          resign "$ARCH"
 
       # Export a signed IPA to disk (no upload) and confirm the App Group
       # entitlement is embedded in both the app and the widget BEFORE anything
