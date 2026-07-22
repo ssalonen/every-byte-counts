@@ -84,7 +84,16 @@ jobs:
       # The probe after the archive reports whether this alone did the job.
       - name: Declare App Groups capability in the generated project
         run: |
-          gem install --no-document xcodeproj || sudo gem install --no-document xcodeproj
+          # Try a plain gem install first, fall back to sudo only if it fails.
+          # The GEM_INSTALL_PATH markers below record which branch was actually
+          # needed on this runner so the dead one can be dropped from this step
+          # once a real run shows which path the macOS image takes.
+          if gem install --no-document xcodeproj; then
+            echo "GEM_INSTALL_PATH=plain (sudo fallback NOT needed — safe to drop the sudo branch)"
+          else
+            echo "GEM_INSTALL_PATH=sudo (plain gem install failed — keep sudo, drop the plain branch)"
+            sudo gem install --no-document xcodeproj
+          fi
           ruby scripts/declare_app_groups_capability.rb EveryByteCounts.xcodeproj
 
       # Fail fast with a clear message if the signing secrets aren't visible.
