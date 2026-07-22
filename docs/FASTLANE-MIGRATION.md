@@ -134,8 +134,14 @@ repo is a native, standard-Developer-Program, iOS-only app. So:
 These need a real macOS host and an Apple portal login, so they can't run in this
 environment — the config will be ready and these are the only manual steps:
 
-1. Create a **private git repo** for signing material (e.g.
-   `ssalonen/everybytecounts-signing`).
+1. Create a **private git repo** for signing material, named for the Apple
+   Developer **team**, not this app — e.g. `ssalonen/mailhub-ios-signing`. One
+   shared repo serves every app under the same team: the distribution cert is
+   per-team (and capped by Apple), so match stores it once and reuses it, while
+   profiles are namespaced by bundle ID. A future app just adds its bundle IDs to
+   the same `Matchfile`. Split into separate repos **only** across different Apple
+   teams, or when you need per-app access isolation (read access + `MATCH_PASSWORD`
+   decrypts everything in the repo).
 2. Generate an SSH key pair (`ssh-keygen -t ed25519`), add the **public** key as
    a read **deploy key** on the signing repo.
 3. `fastlane match init` (point it at the repo's SSH URL), then seed once with
