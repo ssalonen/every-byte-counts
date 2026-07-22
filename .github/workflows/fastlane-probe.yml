@@ -1,0 +1,113 @@
+# TEMPORARY — App Group signing probe for the fastlane migration.
+#
+# Manually triggered (never on push/tag), builds a real App-Store-signed IPA via
+# `fastlane probe` and then proves the App Group entitlement reached both the app
+# and the widget. It NEVER uploads to TestFlight, so runs are cheap and safe to
+# repeat while we converge on Theme B. Delete this file once release.yml runs the
+# real fastlane `beta` lane.
+name: Fastlane probe (App Group, no upload)
+
+on:
+  workflow_dispatch:
+    inputs:
+      match_readonly:
+        description: 'match readonly (false regenerates profiles; needs a write deploy key)'
+        type: boolean
+        default: true
+
+concurrency:
+  group: fastlane-probe-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  probe:
+    name: Build (no upload) & verify App Group
+    runs-on: macos-latest
+    env:
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+      APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+      APP_STORE_CONNECT_API_KEY_P8: ${{ secrets.APP_STORE_CONNECT_API_KEY_P8 }}
+      MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
+      MATCH_GIT_URL: ${{ secrets.MATCH_GIT_URL }}
+      MATCH_READONLY: ${{ inputs.match_readonly }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      # Fail fast with a readable message if setup isn't done yet, instead of
+      # dying deep inside match/xcodebuild on an empty secret.
+      - name: Verify required secrets are present
+        run: |
+          missing=()
+          for v in APPLE_TEAM_ID APP_STORE_CONNECT_KEY_ID APP_STORE_CONNECT_ISSUER_ID \
+                   APP_STORE_CONNECT_API_KEY_P8 MATCH_PASSWORD MATCH_GIT_URL; do
+            [ -n "${!v}" ] || missing+=("$v")
+          done
+          [ -n "${{ secrets.MATCH_REPO_KEY }}" ] || missing+=(MATCH_REPO_KEY)
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "::error::Missing secrets: ${missing[*]}. See docs/FASTLANE-MIGRATION.md → one-time setup."
+            exit 1
+          fi
+
+      # Read-only SSH deploy key for the private match repo.
+      - name: Load match repo SSH key
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.MATCH_REPO_KEY }}
+
+      - name: Select Xcode
+        run: |
+          sudo xcode-select -s "$(ls -d /Applications/Xcode*.app | sort -V | tail -1)"
+          xcodebuild -version
+
+      - name: Set up Ruby + bundler cache
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3'
+          bundler-cache: true
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Build signed IPA (no upload)
+        run: bundle exec fastlane probe
+
+      # The exported IPA is what would ship. Dump the entitlements actually signed
+      # into the app and the widget, and fail if either lacks the App Group — the
+      # single question this probe exists to answer.
+      - name: Verify App Group entitlement in the IPA
+        run: |
+          set -euo pipefail
+          IPA=$(ls build/*.ipa | head -1)
+          unzip -qo "$IPA" -d "$RUNNER_TEMP/ipa"
+          APP=$(ls -d "$RUNNER_TEMP/ipa/Payload/"*.app | head -1)
+          fail=0
+          for BUNDLE in "$APP" "$APP/PlugIns/"*.appex; do
+            NAME=$(basename "$BUNDLE")
+            ENT="$RUNNER_TEMP/ent-$NAME.plist"
+            codesign -d --entitlements :- "$BUNDLE" > "$ENT" 2>/dev/null || true
+            echo "----- entitlements: $NAME -----"
+            plutil -p "$ENT" 2>/dev/null || cat "$ENT"
+            echo "--------------------------------"
+            if grep -q "group.fi.mailhub.everybytecounts" "$ENT"; then
+              echo "OK: $NAME carries the App Group entitlement"
+            else
+              echo "::error::$NAME is signed WITHOUT group.fi.mailhub.everybytecounts"
+              fail=1
+            fi
+          done
+          exit $fail
+
+      - name: Upload IPA + entitlements for inspection
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: probe-output
+          path: |
+            build/*.ipa
+            ${{ runner.temp }}/ent-*.plist
+          if-no-files-found: ignore

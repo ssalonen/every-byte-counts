@@ -1,0 +1,101 @@
+# fastlane lanes for Every Byte Counts (iOS only).
+#
+# During the migration the important lane is `probe` (see fastlane-probe.yml):
+# it builds a real App-Store-signed archive but NEVER uploads, then leaves the
+# IPA on disk so the workflow can prove the App Group entitlement survived. Once
+# the probe is consistently green we port its build to a `beta` lane that adds
+# upload_to_testflight, and delete the probe.
+
+default_platform(:ios)
+
+APP_ID    = "fi.mailhub.everybytecounts"
+WIDGET_ID = "fi.mailhub.everybytecounts.widget"
+PROJECT   = "EveryByteCounts.xcodeproj"
+SCHEME    = "EveryByteCounts"
+APP_TARGET    = "EveryByteCounts"
+WIDGET_TARGET = "EveryByteCountsWidgetExtension"
+
+platform :ios do
+  desc "Sync signing material (read-only on CI) without building anything"
+  lane :certificates do
+    setup_ci
+    match(api_key: asc_api_key, type: "appstore", readonly: FastlaneCore::Helper.ci?)
+  end
+
+  # TEMPORARY diagnostic lane. Builds a signed, exported IPA to ./build without
+  # touching App Store Connect, so we can iterate on Theme B (does the App Group
+  # entitlement reach the shipped binary?) via CI, cheaply and with no risk of a
+  # stray TestFlight upload. Deleted once release.yml runs the real `beta` lane.
+  desc "TEMPORARY: build a signed IPA WITHOUT uploading, for App Group diagnosis"
+  lane :probe do
+    setup_ci
+    key = asc_api_key
+
+    # readonly by default. Set MATCH_READONLY=false (needs a *write* deploy key
+    # and an API key allowed to manage profiles) to regenerate profiles from CI
+    # after changing App-ID capabilities, instead of re-seeding from a Mac.
+    match(
+      api_key: key,
+      type: "appstore",
+      readonly: ENV["MATCH_READONLY"] != "false",
+    )
+
+    # Stamp manual signing + the match profiles into the freshly generated
+    # project. This keeps project.yml free of any signing settings (the source
+    # of much of the XcodeGen pain) — fastlane owns signing at build time.
+    apply_signing(APP_TARGET,    ENV.fetch("sigh_#{APP_ID}_appstore_profile-name"))
+    apply_signing(WIDGET_TARGET, ENV.fetch("sigh_#{WIDGET_ID}_appstore_profile-name"))
+
+    build_number = ENV["GITHUB_RUN_NUMBER"] || "1"
+    build_app(
+      project: PROJECT,
+      scheme: SCHEME,
+      configuration: "Release",
+      clean: true,
+      output_directory: "build",
+      output_name: "EveryByteCounts.ipa",
+      skip_profile_detection: true,
+      export_method: "app-store",
+      export_options: {
+        method: "app-store",
+        signingStyle: "manual",
+        teamID: ENV.fetch("APPLE_TEAM_ID"),
+        signingCertificate: "Apple Distribution",
+        provisioningProfiles: {
+          APP_ID    => ENV.fetch("sigh_#{APP_ID}_appstore_profile-name"),
+          WIDGET_ID => ENV.fetch("sigh_#{WIDGET_ID}_appstore_profile-name"),
+        },
+      },
+      xcargs: [
+        "MARKETING_VERSION=0.0.1",
+        "CURRENT_PROJECT_VERSION=#{build_number}",
+        "DEVELOPMENT_TEAM=#{ENV.fetch('APPLE_TEAM_ID')}",
+      ].join(" "),
+    )
+    UI.success("IPA built at build/EveryByteCounts.ipa — the workflow verifies the App Group next.")
+  end
+end
+
+# App Store Connect API key from the existing repo secrets. key_content is the
+# raw .p8 text (not base64), matching how APP_STORE_CONNECT_API_KEY_P8 is stored.
+def asc_api_key
+  app_store_connect_api_key(
+    key_id: ENV.fetch("APP_STORE_CONNECT_KEY_ID"),
+    issuer_id: ENV.fetch("APP_STORE_CONNECT_ISSUER_ID"),
+    key_content: ENV.fetch("APP_STORE_CONNECT_API_KEY_P8"),
+    is_key_content_base64: false,
+    in_house: false, # standard Developer Program, NOT enterprise
+  )
+end
+
+def apply_signing(target, profile_name)
+  update_code_signing_settings(
+    path: PROJECT,
+    use_automatic_signing: false,
+    team_id: ENV.fetch("APPLE_TEAM_ID"),
+    code_sign_identity: "Apple Distribution",
+    profile_name: profile_name,
+    targets: [target],
+    build_configurations: ["Release"],
+  )
+end
