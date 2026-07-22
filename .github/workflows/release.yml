@@ -231,6 +231,39 @@ jobs:
             MARKETING_VERSION="${VERSION_NUM}" \
             CURRENT_PROJECT_VERSION="${{ github.run_number }}"
 
+      # Diagnostic: the minted profiles authorize the App Group and the exported
+      # binary still lacks it, so the group is dropped somewhere between build and
+      # export. Dump what the ARCHIVED app/widget were actually signed with
+      # (before -exportArchive re-signs) and the CODE_SIGN_ENTITLEMENTS each
+      # target resolved to. This splits the two possibilities:
+      #   - archive HAS the group  -> exportArchive strips it (fix the export).
+      #   - archive LACKS the group -> the app never requested it; CODE_SIGN_
+      #     ENTITLEMENTS isn't the repo .entitlements file (fix project.yml).
+      # Read-only; always exits 0.
+      - name: Dump archived app entitlements (diagnostic)
+        run: |
+          ARCH="$RUNNER_TEMP/EveryByteCounts.xcarchive/Products/Applications/EveryByteCounts.app"
+          for B in "$ARCH" "$ARCH/PlugIns/"*.appex; do
+            [ -e "$B" ] || continue
+            echo "----- archived: $(basename "$B") -----"
+            codesign -d --entitlements :- "$B" 2>/dev/null | plutil -p - 2>/dev/null \
+              || echo "(could not read entitlements)"
+            if codesign -d --entitlements :- "$B" 2>/dev/null | grep -q "group.fi.mailhub.everybytecounts"; then
+              echo ">>> App Group in ARCHIVE: PRESENT"
+            else
+              echo ">>> App Group in ARCHIVE: ABSENT"
+            fi
+            echo "--------------------------------"
+          done
+          echo "===== resolved CODE_SIGN_ENTITLEMENTS ====="
+          for T in EveryByteCounts EveryByteCountsWidgetExtension; do
+            echo "--- target: $T ---"
+            xcodebuild -project EveryByteCounts.xcodeproj -target "$T" \
+              -configuration Release -showBuildSettings 2>/dev/null \
+              | grep -E "CODE_SIGN_ENTITLEMENTS|PRODUCT_BUNDLE_IDENTIFIER" || echo "(none)"
+          done
+          exit 0
+
       # Export a signed IPA to disk (no upload) and confirm the App Group
       # entitlement is embedded in both the app and the widget BEFORE anything
       # ships. exportArchive fails if a profile doesn't grant a requested
