@@ -84,7 +84,7 @@ jobs:
       # The probe after the archive reports whether this alone did the job.
       - name: Declare App Groups capability in the generated project
         run: |
-          gem install --no-document xcodeproj
+          gem install --no-document xcodeproj || sudo gem install --no-document xcodeproj
           ruby scripts/declare_app_groups_capability.rb EveryByteCounts.xcodeproj
 
       # Fail fast with a clear message if the signing secrets aren't visible.
