@@ -61,15 +61,38 @@ fastlane/
 
 - `certificates` — `match(type: "appstore", readonly: is_ci)`; syncs the cert +
   both profiles (`fi.mailhub.everybytecounts`, `.widget`).
-- `beta` — `app_store_connect_api_key(...)` → `match` → `build_app` (archive the
-  XcodeGen project) → **App Group verify + re-sign fallback** → `upload_to_testflight`.
-  `MARKETING_VERSION` / `CURRENT_PROJECT_VERSION` passed via `xcargs`, so the
-  existing versioning is untouched.
+- `beta` — `setup_ci` → `app_store_connect_api_key(...)` →
+  `match(api_key:, readonly:)` → `build_app` (archive the XcodeGen project) →
+  **App Group verify + re-sign fallback** → `upload_to_testflight(api_key:)`.
+  `MARKETING_VERSION` / `CURRENT_PROJECT_VERSION` passed via `xcargs` (build
+  number stays `github.run_number`), so the existing versioning is untouched.
 - `build` — local-only archive for a dev to sanity-check signing without upload.
+
+Two details the reference article makes concrete and we adopt:
+- **`setup_ci`** must run first on CI — it creates the temporary keychain
+  `match` installs the cert into. Without it `match` fails on the runner.
+- **`match(api_key: ...)`** and **`upload_to_testflight(api_key: ...)`** — feeding
+  the ASC API key into both means **no `APPLE_ID` / password / 2FA login
+  anywhere**, cleaner than the article's own secret list (it still carries
+  `APPLE_ID` / `ITUNES_TEAM_ID`; we don't need either).
 
 All App Store Connect auth reuses the existing secrets via a single
 `app_store_connect_api_key` block: `APP_STORE_CONNECT_KEY_ID`,
 `APP_STORE_CONNECT_ISSUER_ID`, `APP_STORE_CONNECT_API_KEY_P8`.
+
+### Where we deviate from the reference article (and why)
+
+The article is a **React Native, enterprise-account, Android+iOS** guide; this
+repo is a native, standard-Developer-Program, iOS-only app. So:
+
+| Article | Here |
+|---------|------|
+| `Pods` / `pod install` / `npm` / `.xcworkspace` steps | Dropped — pure XcodeGen `.xcodeproj`, no CocoaPods/JS |
+| `in_house: true` on the API key | `in_house: false` — enterprise-only flag; would break a normal TestFlight upload |
+| Android lane + `slack` notifications | Omitted — no Android target, no Slack in this repo |
+| `latest_testflight_build_number + 1` | Keep `github.run_number` — no extra ASC round-trip |
+| New secret names (`APPSTORE_*`, `APPLE_ID`, `ITUNES_TEAM_ID`) | Keep existing `APPLE_TEAM_ID` + `APP_STORE_CONNECT_*`; API-key auth drops `APPLE_ID`/`ITUNES_TEAM_ID` entirely |
+| (n/a — no App Group extension) | Keep the App Group verify + re-sign fallback (Theme B) |
 
 ## Work items
 
@@ -80,18 +103,25 @@ All App Store Connect auth reuses the existing secrets via a single
    chunk of "the xcodegen issues." Debug/simulator builds keep automatic signing.
 2. **Add `fastlane/` + `Gemfile`** as above.
 3. **Rewrite `release.yml`.** Replace the ~10 keychain/profile/export steps with:
-   checkout → select Xcode → `bundle install` + `brew install xcodegen` →
-   `xcodegen generate` → `bundle exec fastlane beta`. Keep changelog, version-bump
-   commit, and GitHub Release steps. Net: ~250 fewer lines.
+   checkout → `ruby/setup-ruby` (bundler cache) → **`webfactory/ssh-agent` loaded
+   with `MATCH_REPO_KEY`** (so `match` can `git clone` the signing repo over SSH)
+   → select Xcode → `brew install xcodegen` → `xcodegen generate` →
+   `bundle exec fastlane beta`. Keep changelog, version-bump commit, and GitHub
+   Release steps. Net: ~250 fewer lines.
 4. **App Group safety net.** Register the capability properly via `match`, then a
    post-build hook re-checks the exported IPA for
    `group.fi.mailhub.everybytecounts` and, if missing, re-signs (porting the
    logic from the current "Force the App Group entitlement…" step) before upload.
 5. **Delete** `scripts/create_appstore_profiles.py`.
-6. **Secrets:** drop `APPLE_DIST_CERT_P12_BASE64` / `APPLE_DIST_CERT_PASSWORD`;
-   add `MATCH_PASSWORD` and a read token for the signing repo
-   (`MATCH_GIT_BASIC_AUTHORIZATION` or a deploy key). `APPLE_TEAM_ID` +
-   the three `APP_STORE_CONNECT_*` secrets stay.
+6. **Secrets:** drop `APPLE_DIST_CERT_P12_BASE64` / `APPLE_DIST_CERT_PASSWORD`
+   (the `.p12` now lives, encrypted, in the match repo). Add:
+   - `MATCH_PASSWORD` — the passphrase that encrypts the match repo.
+   - `MATCH_REPO_KEY` — the **private half** of an SSH key added as a **read
+     deploy key** on the signing repo; loaded via `webfactory/ssh-agent` so CI
+     can clone it.
+   - `MATCH_GIT_URL` — the signing repo's SSH URL (referenced from `Matchfile`).
+
+   `APPLE_TEAM_ID` + the three `APP_STORE_CONNECT_*` secrets stay unchanged.
 7. **README + `.gitignore`.** Rewrite the "Distribution" section (new one-time
    setup + a "Local development signing" subsection); ignore `vendor/`,
    `fastlane/report.xml`, `fastlane/README.md`.
@@ -103,9 +133,13 @@ environment — the config will be ready and these are the only manual steps:
 
 1. Create a **private git repo** for signing material (e.g.
    `ssalonen/everybytecounts-signing`).
-2. Seed it once: `bundle exec fastlane match appstore` — creates/stores the
-   distribution cert + both App Store profiles, encrypted with `MATCH_PASSWORD`.
-3. Add repo secrets: `MATCH_PASSWORD` and the signing-repo read credential.
+2. Generate an SSH key pair (`ssh-keygen -t ed25519`), add the **public** key as
+   a read **deploy key** on the signing repo.
+3. `fastlane match init` (point it at the repo's SSH URL), then seed once with
+   `bundle exec fastlane match appstore` — creates/stores the distribution cert +
+   both App Store profiles, encrypted with the `MATCH_PASSWORD` passphrase.
+4. Add repo secrets: `MATCH_PASSWORD`, `MATCH_REPO_KEY` (the **private** key from
+   step 2), and `MATCH_GIT_URL` (the SSH URL).
 
 After that, every release runs `match --readonly` and never touches the portal.
 
