@@ -108,10 +108,13 @@ repo is a native, standard-Developer-Program, iOS-only app. So:
    → select Xcode → `brew install xcodegen` → `xcodegen generate` →
    `bundle exec fastlane beta`. Keep changelog, version-bump commit, and GitHub
    Release steps. Net: ~250 fewer lines.
-4. **App Group safety net.** Register the capability properly via `match`, then a
-   post-build hook re-checks the exported IPA for
-   `group.fi.mailhub.everybytecounts` and, if missing, re-signs (porting the
-   logic from the current "Force the App Group entitlement…" step) before upload.
+4. **App Group — fix the root cause first, keep the re-sign as a fallback.**
+   See "Theme B best practices" below. Order: (a) both bundle IDs listed in the
+   Matchfile, (b) App Groups capability enabled **and the specific group
+   associated** on both App IDs in the portal, (c) `match` regenerates profiles
+   that now inherit the group, (d) a post-build hook verifies the exported IPA
+   carries `group.fi.mailhub.everybytecounts` and only re-signs (porting the
+   current "Force the App Group entitlement…" logic) if it is still missing.
 5. **Delete** `scripts/create_appstore_profiles.py`.
 6. **Secrets:** drop `APPLE_DIST_CERT_P12_BASE64` / `APPLE_DIST_CERT_PASSWORD`
    (the `.p12` now lives, encrypted, in the match repo). Add:
@@ -143,11 +146,63 @@ environment — the config will be ready and these are the only manual steps:
 
 After that, every release runs `match --readonly` and never touches the portal.
 
-## Risks / open questions
+## Theme B best practices (researched)
 
-- **App Group stripping may persist** (Theme B). The re-sign fallback covers it,
-  so worst case the hack is preserved but hidden inside a fastlane hook instead
-  of sprawled across the workflow. Best case, clean `match` profiles fix the root
-  cause and the fallback is dead code we can later delete.
+Community + Apple guidance on App Groups with `match` and app extensions
+converges on one principle: **capabilities live on the App ID, and a
+provisioning profile only ever inherits what its App ID already has.** This
+reframes our nine-PR fight and tells us where the real fix belongs.
+
+1. **List every bundle ID in the Matchfile** (`app_identifier` array must include
+   both `fi.mailhub.everybytecounts` **and** `…​.widget`). If the extension's ID
+   is omitted, `match` silently skips its profile and the build later dies with a
+   *misleading* "profile doesn't support the App Group" error that points at the
+   **app**, not the missing widget profile. [1]
+
+2. **Enable the capability on the App ID, not in the Xcode project.** `match`
+   regenerates a profile to match the App ID's *current* state; it cannot add a
+   capability the App ID lacks, and there is **no App Store Connect API to
+   register unknown/custom entitlements**. App Groups is a predefined capability,
+   so it can be enabled — but the **specific group must be associated** with each
+   App ID in the portal (or via `produce`) *before* running `match`. [2][3]
+   - This is exactly why PR #28 ("declare the App Groups capability in the
+     generated project") did nothing and was reverted in #29 — the project is the
+     wrong layer. Our own `release.yml` diagnostic already suspected it: *"the App
+     ID isn't handing the group to the profile … a portal/App-ID fix."*
+
+3. **Then, and only then, verify + re-sign as a last resort.** With (1) and (2)
+   correct, the minted profile authorises the group and the entitlements file
+   requests it, so a manually-signed archive should carry it. If Xcode 26 *still*
+   strips it during packaging (a narrower, real bug), the post-build re-sign is
+   the escape hatch — but it stops being load-bearing.
+
+4. **Watch the entitlement-key gotcha.** The iOS key is
+   `com.apple.security.application-groups` (what our entitlements files use —
+   correct). Some tooling/errors reference `com.apple.developer.app-groups`; a
+   mismatch there produces a "profile doesn't include the … app-groups
+   entitlement" error even when everything else is right. [4]
+
+**Net:** the re-sign hack may well have been compensating for an App-ID-level
+misconfiguration (group enabled but not associated). Doing (1)+(2) properly is
+the best-practice fix and could retire the hack entirely; we keep the verify gate
+permanently and the re-sign only as a guarded fallback.
+
+### Sources
+
+- [1] The fastlane Matchfile bundle-ID trap after adding a widget —
+  https://dev.to/snake_sun/the-fastlane-matchfile-bundle-id-trap-that-killed-my-ci-after-adding-a-widget-j34
+- [2] `match` force-generated profile does not include all capabilities —
+  https://github.com/fastlane/fastlane/issues/15834
+- [3] Creating profiles with managed capabilities / custom entitlements
+  (templateName deprecated; enable on App ID via `produce`, then `match`) —
+  https://github.com/fastlane/fastlane/discussions/29609
+- [4] App Groups entitlement mismatch between profile and Xcode for an iOS app
+  extension (Apple Developer Forums) —
+  https://developer.apple.com/forums/thread/792656 and
+  https://developer.apple.com/forums/thread/792648
+- `match` action docs — https://docs.fastlane.tools/actions/match/
+
+## Other risks / open questions
+
 - **Two Apple accounts / no Mac in CI-only setups:** `match` seeding is the one
   step that needs a human with portal access; unavoidable regardless of tooling.
