@@ -240,12 +240,18 @@ jobs:
       # never declares the App Groups capability, only the entitlements file.
       # Rather than fight the packaging step, re-sign each archived binary with
       # the group merged back into the entitlements it already carries.
-      # `xcodebuild -exportArchive` preserves entitlements that are already in a
-      # signature, so the group now survives export and upload. Sign the widget
-      # before the app (inside-out); reuse the Apple Distribution identity from
-      # the temp keychain. The embedded provisioning profile is left in place.
-      # The verify step below still gates the release, so a bad re-sign fails
-      # loudly instead of shipping.
+      #
+      # Why this survives to the shipped IPA: `xcodebuild -exportArchive`
+      # preserves entitlements that are already present in a signature (it only
+      # re-derives from profile defaults for code left unsigned in the archive).
+      # Same behaviour, and the same re-sign-with-entitlements workaround, is
+      # documented in tauri-apps/tauri#15663:
+      #   https://github.com/tauri-apps/tauri/issues/15663
+      #
+      # Sign the widget before the app (inside-out); reuse the Apple Distribution
+      # identity from the temp keychain. The embedded provisioning profile is
+      # left in place. The verify step below still gates the release, so a bad
+      # re-sign fails loudly instead of shipping.
       - name: Force the App Group entitlement into the archived binaries
         run: |
           set -euo pipefail
