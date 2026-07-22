@@ -75,6 +75,27 @@ jobs:
           sed -i "" "s/MARKETING_VERSION: \"[^\"]*\"/MARKETING_VERSION: \"${VERSION_NUM}\"/" project.yml
           xcodegen generate
 
+      # Declare the App Groups capability on both targets. XcodeGen only wires
+      # the entitlements file, so the generated project leaves the capability
+      # undeclared and Xcode's packaging strips the App Group from the signed
+      # .xcent. This writes the same SystemCapabilities entry Xcode's Signing &
+      # Capabilities editor would, which should make Xcode keep the entitlement —
+      # the clean root-cause fix for what the re-sign step below works around.
+      # The probe after the archive reports whether this alone did the job.
+      - name: Declare App Groups capability in the generated project
+        run: |
+          # Try a plain gem install first, fall back to sudo only if it fails.
+          # The GEM_INSTALL_PATH markers below record which branch was actually
+          # needed on this runner so the dead one can be dropped from this step
+          # once a real run shows which path the macOS image takes.
+          if gem install --no-document xcodeproj; then
+            echo "GEM_INSTALL_PATH=plain (sudo fallback NOT needed — safe to drop the sudo branch)"
+          else
+            echo "GEM_INSTALL_PATH=sudo (plain gem install failed — keep sudo, drop the plain branch)"
+            sudo gem install --no-document xcodeproj
+          fi
+          ruby scripts/declare_app_groups_capability.rb EveryByteCounts.xcodeproj
+
       # Fail fast with a clear message if the signing secrets aren't visible.
       # The classic trap: when this workflow runs via workflow_call, the caller
       # must forward secrets with `secrets: inherit` — otherwise every secret
@@ -232,6 +253,26 @@ jobs:
             DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
             MARKETING_VERSION="${VERSION_NUM}" \
             CURRENT_PROJECT_VERSION="${{ github.run_number }}"
+
+      # Probe: did declaring the App Groups capability (above) stop Xcode from
+      # stripping the group, without the re-sign? Reports the archived binaries'
+      # entitlements as they came out of Xcode, BEFORE the re-sign step runs.
+      #   PRESENT on both -> the capability declaration is the real fix; the
+      #     re-sign below is now a redundant no-op and can be removed.
+      #   ABSENT -> capability declaration alone isn't enough; the re-sign stays.
+      # Read-only; always exits 0.
+      - name: Probe archived App Group before re-sign (diagnostic)
+        run: |
+          ARCH="$RUNNER_TEMP/EveryByteCounts.xcarchive/Products/Applications/EveryByteCounts.app"
+          for B in "$ARCH" "$ARCH/PlugIns/"*.appex; do
+            [ -e "$B" ] || continue
+            if codesign -d --entitlements :- "$B" 2>/dev/null | grep -q "group.fi.mailhub.everybytecounts"; then
+              echo ">>> $(basename "$B"): App Group in ARCHIVE (pre-re-sign) = PRESENT"
+            else
+              echo ">>> $(basename "$B"): App Group in ARCHIVE (pre-re-sign) = ABSENT"
+            fi
+          done
+          exit 0
 
       # Xcode dropped the App Group from the archived binaries (see the note on
       # the archive step). Everything upstream is correct — the entitlements
