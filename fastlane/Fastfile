@@ -52,14 +52,36 @@ platform :ios do
     apply_signing(WIDGET_TARGET, ENV.fetch("sigh_#{WIDGET_ID}_appstore_profile-name"))
 
     build_number = ENV["GITHUB_RUN_NUMBER"] || "1"
+    archive_path = File.expand_path("build/EveryByteCounts.xcarchive")
+
+    # 1. Archive only — no IPA yet, so we can fix the archive before it's packaged.
     build_app(
       project: PROJECT,
       scheme: SCHEME,
       configuration: "Release",
       clean: true,
+      skip_package_ipa: true,
+      archive_path: archive_path,
+      xcargs: [
+        "MARKETING_VERSION=0.0.1",
+        "CURRENT_PROJECT_VERSION=#{build_number}",
+        "DEVELOPMENT_TEAM=#{ENV.fetch('APPLE_TEAM_ID')}",
+      ].join(" "),
+    )
+
+    # 2. Xcode 26 strips com.apple.security.application-groups while packaging the
+    #    archive, even though the match profiles authorise it (proven by the
+    #    probe's profile dump). Re-sign each archived binary with the group merged
+    #    back into the entitlements it already carries; exportArchive preserves
+    #    entitlements already present in a signature.
+    force_app_group(archive_path)
+
+    # 3. Export the signed IPA from the re-signed archive (no upload).
+    build_app(
+      skip_build_archive: true,
+      archive_path: archive_path,
       output_directory: "build",
       output_name: "EveryByteCounts.ipa",
-      skip_profile_detection: true,
       export_method: "app-store",
       export_options: {
         method: "app-store",
@@ -71,11 +93,6 @@ platform :ios do
           WIDGET_ID => ENV.fetch("sigh_#{WIDGET_ID}_appstore_profile-name"),
         },
       },
-      xcargs: [
-        "MARKETING_VERSION=0.0.1",
-        "CURRENT_PROJECT_VERSION=#{build_number}",
-        "DEVELOPMENT_TEAM=#{ENV.fetch('APPLE_TEAM_ID')}",
-      ].join(" "),
     )
     UI.success("IPA built at build/EveryByteCounts.ipa — the workflow verifies the App Group next.")
   end
@@ -91,6 +108,43 @@ def asc_api_key
     is_key_content_base64: false,
     in_house: false, # standard Developer Program, NOT enterprise
   )
+end
+
+# Re-sign the archived app + widget with the App Group merged back into the
+# entitlements Xcode 26 stripped during archiving. Widget (nested) first, then
+# the app — codesign must sign inside-out. Uses the Apple Distribution identity
+# that match installed into setup_ci's keychain.
+def force_app_group(archive_path)
+  app = "#{archive_path}/Products/Applications/EveryByteCounts.app"
+  sh(<<~BASH)
+    set -euo pipefail
+    GROUP="group.fi.mailhub.everybytecounts"
+    IDENTITY="Apple Distribution"
+    APP="#{app}"
+    KCARG=""
+    [ -n "${MATCH_KEYCHAIN_NAME:-}" ] && KCARG="--keychain ${MATCH_KEYCHAIN_NAME}"
+
+    resign() {
+      bundle="$1"
+      ent="$(mktemp)"
+      # Start from the entitlements already signed in (application-identifier,
+      # team-identifier, get-task-allow, beta-reports-active) so only the missing
+      # App Group is added.
+      codesign -d --entitlements :- "$bundle" > "$ent" 2>/dev/null
+      plutil -convert xml1 "$ent"
+      /usr/libexec/PlistBuddy -c "Delete :com.apple.security.application-groups" "$ent" 2>/dev/null || true
+      /usr/libexec/PlistBuddy -c "Add :com.apple.security.application-groups array" "$ent"
+      /usr/libexec/PlistBuddy -c "Add :com.apple.security.application-groups:0 string $GROUP" "$ent"
+      codesign --force --sign "$IDENTITY" $KCARG --entitlements "$ent" "$bundle"
+      echo "re-signed $(basename "$bundle"); entitlements now:"
+      codesign -d --entitlements :- "$bundle" 2>/dev/null | plutil -p -
+    }
+
+    for EXT in "$APP/PlugIns/"*.appex; do
+      [ -e "$EXT" ] && resign "$EXT"
+    done
+    resign "$APP"
+  BASH
 end
 
 def apply_signing(target, profile_name)
