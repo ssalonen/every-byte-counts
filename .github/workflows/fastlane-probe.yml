@@ -93,22 +93,27 @@ jobs:
         run: |
           shopt -s nullglob
           found=0
-          for f in "$HOME/Library/MobileDevice/Provisioning Profiles/"*.mobileprovision; do
-            found=1
-            security cms -D -i "$f" -o /tmp/pp.plist 2>/dev/null || continue
-            NAME=$(/usr/libexec/PlistBuddy -c 'Print :Name' /tmp/pp.plist 2>/dev/null || echo '?')
-            echo "----- profile: $NAME -----"
-            /usr/libexec/PlistBuddy -c 'Print :Entitlements' /tmp/pp.plist 2>/dev/null \
-              || echo "(no Entitlements dict)"
-            if /usr/libexec/PlistBuddy -c 'Print :Entitlements:com.apple.security.application-groups' \
-                 /tmp/pp.plist >/dev/null 2>&1; then
-              echo ">>> App Group: AUTHORIZED by this profile"
-            else
-              echo ">>> App Group: NOT authorized by this profile"
-            fi
-            echo "--------------------------------"
+          # Both the classic and the Xcode 16+/26 install locations — match uses
+          # the latter on current Xcode.
+          for dir in "$HOME/Library/MobileDevice/Provisioning Profiles" \
+                     "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles"; do
+            for f in "$dir/"*.mobileprovision; do
+              found=1
+              security cms -D -i "$f" -o /tmp/pp.plist 2>/dev/null || continue
+              NAME=$(/usr/libexec/PlistBuddy -c 'Print :Name' /tmp/pp.plist 2>/dev/null || echo '?')
+              echo "----- profile: $NAME  ($dir) -----"
+              /usr/libexec/PlistBuddy -c 'Print :Entitlements' /tmp/pp.plist 2>/dev/null \
+                || echo "(no Entitlements dict)"
+              if /usr/libexec/PlistBuddy -c 'Print :Entitlements:com.apple.security.application-groups' \
+                   /tmp/pp.plist >/dev/null 2>&1; then
+                echo ">>> App Group: AUTHORIZED by this profile"
+              else
+                echo ">>> App Group: NOT authorized by this profile"
+              fi
+              echo "--------------------------------"
+            done
           done
-          [ "$found" = 1 ] || echo "No installed provisioning profiles found."
+          [ "$found" = 1 ] || echo "No installed provisioning profiles found in either location."
           exit 0
 
       # The exported IPA is what would ship. Dump the entitlements actually signed
