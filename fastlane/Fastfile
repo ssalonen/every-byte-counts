@@ -1,10 +1,10 @@
 # fastlane lanes for Every Byte Counts (iOS only).
 #
-# During the migration the important lane is `probe` (see fastlane-probe.yml):
-# it builds a real App-Store-signed archive but NEVER uploads, then leaves the
-# IPA on disk so the workflow can prove the App Group entitlement survived. Once
-# the probe is consistently green we port its build to a `beta` lane that adds
-# upload_to_testflight, and delete the probe.
+# `beta` is the release lane (called by release.yml): sync signing, build a
+# signed IPA, and upload to TestFlight. `probe` is a temporary, no-upload
+# variant that leaves the IPA on disk so fastlane-probe.yml can verify the
+# entitlements without shipping — deleted once the first real release confirms
+# the upload leg. Both share build_signed_ipa so they can't drift.
 
 default_platform(:ios)
 
@@ -30,76 +30,91 @@ platform :ios do
     match(api_key: asc_api_key, type: "appstore", readonly: FastlaneCore::Helper.ci?)
   end
 
-  # TEMPORARY diagnostic lane. Builds a signed, exported IPA to ./build without
-  # touching App Store Connect, so we can iterate on Theme B (does the App Group
-  # entitlement reach the shipped binary?) via CI, cheaply and with no risk of a
-  # stray TestFlight upload. Deleted once release.yml runs the real `beta` lane.
-  desc "TEMPORARY: build a signed IPA WITHOUT uploading, for App Group diagnosis"
-  lane :probe do
+  desc "Build and upload a signed build to TestFlight"
+  lane :beta do
     setup_ci
     key = asc_api_key
-
-    # readonly by default. Set MATCH_READONLY=false (needs a *write* deploy key
-    # and an API key allowed to manage profiles) to regenerate profiles from CI
-    # after changing App-ID capabilities, instead of re-seeding from a Mac.
-    match(
+    build_signed_ipa(key)
+    upload_to_testflight(
       api_key: key,
-      type: "appstore",
-      readonly: ENV["MATCH_READONLY"] != "false",
+      ipa: "build/EveryByteCounts.ipa",
+      # Internal testers only — don't submit for external Beta App Review, and
+      # don't block CI while App Store Connect processes the build.
+      skip_submission: true,
+      skip_waiting_for_build_processing: true,
     )
-
-    # Stamp manual signing + the match profiles into the freshly generated
-    # project. This keeps project.yml free of any signing settings (the source
-    # of much of the XcodeGen pain) — fastlane owns signing at build time.
-    apply_signing(APP_TARGET,    ENV.fetch("sigh_#{APP_ID}_appstore_profile-name"))
-    apply_signing(WIDGET_TARGET, ENV.fetch("sigh_#{WIDGET_ID}_appstore_profile-name"))
-
-    build_number = ENV["GITHUB_RUN_NUMBER"] || "1"
-    archive_path = File.expand_path("build/EveryByteCounts.xcarchive")
-
-    # 1. Archive only — no IPA yet, so we can fix the archive before it's packaged.
-    build_app(
-      project: PROJECT,
-      scheme: SCHEME,
-      configuration: "Release",
-      clean: true,
-      skip_package_ipa: true,
-      archive_path: archive_path,
-      xcargs: [
-        "MARKETING_VERSION=0.0.1",
-        "CURRENT_PROJECT_VERSION=#{build_number}",
-        "DEVELOPMENT_TEAM=#{ENV.fetch('APPLE_TEAM_ID')}",
-      ].join(" "),
-    )
-
-    # 2. Xcode 26 strips declared capabilities (e.g. App Groups) while packaging
-    #    the archive, even though the match profiles authorise them (proven by the
-    #    probe's profile dump). Re-assert each target's declared .entitlements onto
-    #    the archived binary before export; exportArchive preserves entitlements
-    #    already present in a signature. Generic — restores whatever the
-    #    .entitlements files declare, not just App Groups.
-    restore_declared_entitlements(archive_path)
-
-    # 3. Export the signed IPA from the re-signed archive (no upload).
-    build_app(
-      skip_build_archive: true,
-      archive_path: archive_path,
-      output_directory: "build",
-      output_name: "EveryByteCounts.ipa",
-      export_method: "app-store",
-      export_options: {
-        method: "app-store",
-        signingStyle: "manual",
-        teamID: ENV.fetch("APPLE_TEAM_ID"),
-        signingCertificate: "Apple Distribution",
-        provisioningProfiles: {
-          APP_ID    => ENV.fetch("sigh_#{APP_ID}_appstore_profile-name"),
-          WIDGET_ID => ENV.fetch("sigh_#{WIDGET_ID}_appstore_profile-name"),
-        },
-      },
-    )
-    UI.success("IPA built at build/EveryByteCounts.ipa — the workflow verifies the App Group next.")
   end
+
+  # TEMPORARY diagnostic lane: the same signed build as `beta` but WITHOUT the
+  # upload, so fastlane-probe.yml can verify the shipped entitlements cheaply and
+  # with no risk of a stray TestFlight upload. Deleted once the first real
+  # release confirms the upload leg.
+  desc "TEMPORARY: build a signed IPA WITHOUT uploading, for entitlement checks"
+  lane :probe do
+    setup_ci
+    build_signed_ipa(asc_api_key)
+    UI.success("IPA built at build/EveryByteCounts.ipa — the workflow verifies the entitlements next.")
+  end
+end
+
+# Sync signing and produce a signed App-Store IPA at build/EveryByteCounts.ipa.
+# Shared by `beta` (which uploads it) and `probe` (which only verifies it), so
+# the release build and the checked build can never diverge. MARKETING_VERSION
+# comes from release.yml (the tag); build number from the CI run number.
+def build_signed_ipa(key)
+  # readonly by default. Set MATCH_READONLY=false (needs a *write* deploy key and
+  # an API key allowed to manage profiles) to regenerate profiles from CI after
+  # changing App-ID capabilities, instead of re-seeding from a Mac.
+  match(api_key: key, type: "appstore", readonly: ENV["MATCH_READONLY"] != "false")
+
+  # Stamp manual signing + the match profiles into the freshly generated project,
+  # so project.yml carries no signing settings (a source of the XcodeGen pain).
+  apply_signing(APP_TARGET,    ENV.fetch("sigh_#{APP_ID}_appstore_profile-name"))
+  apply_signing(WIDGET_TARGET, ENV.fetch("sigh_#{WIDGET_ID}_appstore_profile-name"))
+
+  marketing_version = ENV["MARKETING_VERSION"] || "0.0.1"
+  build_number = ENV["GITHUB_RUN_NUMBER"] || "1"
+  archive_path = File.expand_path("build/EveryByteCounts.xcarchive")
+
+  # 1. Archive only — no IPA yet, so we can fix the archive before it's packaged.
+  build_app(
+    project: PROJECT,
+    scheme: SCHEME,
+    configuration: "Release",
+    clean: true,
+    skip_package_ipa: true,
+    archive_path: archive_path,
+    xcargs: [
+      "MARKETING_VERSION=#{marketing_version}",
+      "CURRENT_PROJECT_VERSION=#{build_number}",
+      "DEVELOPMENT_TEAM=#{ENV.fetch('APPLE_TEAM_ID')}",
+    ].join(" "),
+  )
+
+  # 2. Xcode 26 strips declared capabilities (e.g. App Groups) while packaging the
+  #    archive even though the match profiles authorise them; re-assert each
+  #    target's declared .entitlements onto the archived binary before export.
+  #    exportArchive preserves entitlements already present in a signature.
+  restore_declared_entitlements(archive_path)
+
+  # 3. Export the signed IPA from the re-signed archive.
+  build_app(
+    skip_build_archive: true,
+    archive_path: archive_path,
+    output_directory: "build",
+    output_name: "EveryByteCounts.ipa",
+    export_method: "app-store",
+    export_options: {
+      method: "app-store",
+      signingStyle: "manual",
+      teamID: ENV.fetch("APPLE_TEAM_ID"),
+      signingCertificate: "Apple Distribution",
+      provisioningProfiles: {
+        APP_ID    => ENV.fetch("sigh_#{APP_ID}_appstore_profile-name"),
+        WIDGET_ID => ENV.fetch("sigh_#{WIDGET_ID}_appstore_profile-name"),
+      },
+    },
+  )
 end
 
 # App Store Connect API key from the existing repo secrets. key_content is the

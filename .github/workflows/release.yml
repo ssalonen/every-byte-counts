@@ -21,6 +21,16 @@ jobs:
     name: Sign & upload to TestFlight
     runs-on: macos-latest
 
+    env:
+      # fastlane (match, gym, pilot) reads all of these. Signing is fully
+      # managed by match — no keychains, .p12s, or hand-minted profiles here.
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+      APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+      APP_STORE_CONNECT_API_KEY_P8: ${{ secrets.APP_STORE_CONNECT_API_KEY_P8 }}
+      MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
+      MATCH_GIT_URL: ${{ secrets.MATCH_GIT_URL }}
+
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -36,8 +46,10 @@ jobs:
             TAG="${{ inputs.tag }}"
           fi
           VERSION_NUM="${TAG#v}"
-          echo "TAG=$TAG"                 >> "$GITHUB_ENV"
-          echo "VERSION_NUM=$VERSION_NUM" >> "$GITHUB_ENV"
+          echo "TAG=$TAG"                       >> "$GITHUB_ENV"
+          echo "VERSION_NUM=$VERSION_NUM"       >> "$GITHUB_ENV"
+          # fastlane stamps this into the build (see build_signed_ipa).
+          echo "MARKETING_VERSION=$VERSION_NUM" >> "$GITHUB_ENV"
 
       - name: Find previous tag
         run: |
@@ -62,352 +74,52 @@ jobs:
           echo "${CHANGELOG:-"(no changes detected)"}" >> "$GITHUB_ENV"
           echo "EOF" >> "$GITHUB_ENV"
 
-      - name: Select Xcode
-        run: |
-          sudo xcode-select -s "$(ls -d /Applications/Xcode*.app | sort -V | tail -1)"
-          xcodebuild -version
-
-      - name: Install XcodeGen
-        run: brew install xcodegen
-
-      - name: Generate Xcode project
-        run: |
-          sed -i "" "s/MARKETING_VERSION: \"[^\"]*\"/MARKETING_VERSION: \"${VERSION_NUM}\"/" project.yml
-          xcodegen generate
-
       # Fail fast with a clear message if the signing secrets aren't visible.
       # The classic trap: when this workflow runs via workflow_call, the caller
       # must forward secrets with `secrets: inherit` — otherwise every secret
-      # silently expands to "" and xcodebuild dies with a cryptic flag error.
+      # silently expands to "" and fastlane dies with a cryptic error.
       - name: Verify signing secrets are present
-        env:
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
-          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
-          APP_STORE_CONNECT_API_KEY_P8: ${{ secrets.APP_STORE_CONNECT_API_KEY_P8 }}
-          APPLE_DIST_CERT_P12_BASE64: ${{ secrets.APPLE_DIST_CERT_P12_BASE64 }}
-          APPLE_DIST_CERT_PASSWORD: ${{ secrets.APPLE_DIST_CERT_PASSWORD }}
         run: |
           missing=()
           [ -n "$APPLE_TEAM_ID" ]                || missing+=(APPLE_TEAM_ID)
           [ -n "$APP_STORE_CONNECT_KEY_ID" ]     || missing+=(APP_STORE_CONNECT_KEY_ID)
           [ -n "$APP_STORE_CONNECT_ISSUER_ID" ]  || missing+=(APP_STORE_CONNECT_ISSUER_ID)
           [ -n "$APP_STORE_CONNECT_API_KEY_P8" ] || missing+=(APP_STORE_CONNECT_API_KEY_P8)
-          [ -n "$APPLE_DIST_CERT_P12_BASE64" ]   || missing+=(APPLE_DIST_CERT_P12_BASE64)
-          [ -n "$APPLE_DIST_CERT_PASSWORD" ]     || missing+=(APPLE_DIST_CERT_PASSWORD)
+          [ -n "$MATCH_PASSWORD" ]               || missing+=(MATCH_PASSWORD)
+          [ -n "$MATCH_GIT_URL" ]                || missing+=(MATCH_GIT_URL)
+          [ -n "${{ secrets.MATCH_REPO_KEY }}" ] || missing+=(MATCH_REPO_KEY)
           if [ "${#missing[@]}" -gt 0 ]; then
-            echo "::error::Missing secrets: ${missing[*]}. Add them under Settings → Secrets and variables → Actions; if this run came through workflow_call, ensure the caller uses 'secrets: inherit'."
+            echo "::error::Missing secrets: ${missing[*]}. Add them under Settings → Secrets and variables → Actions; if this run came through workflow_call, ensure the caller uses 'secrets: inherit'. See docs/FASTLANE-MIGRATION.md."
             exit 1
           fi
 
-      # App Store Connect API key auth (no Apple ID/password/2FA in CI). The key
-      # itself is the only long-lived secret; it's scoped, revocable, and never
-      # touches the repo. xcodebuild reads it from this well-known path.
-      - name: Install App Store Connect API key
-        env:
-          APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
-          APP_STORE_CONNECT_API_KEY_P8: ${{ secrets.APP_STORE_CONNECT_API_KEY_P8 }}
+      # Read-only SSH deploy key so match can `git clone` the private signing repo.
+      - name: Load match repo SSH key
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.MATCH_REPO_KEY }}
+
+      - name: Select Xcode
         run: |
-          mkdir -p "$RUNNER_TEMP/private_keys"
-          AUTH_KEY_PATH="$RUNNER_TEMP/private_keys/AuthKey_${APP_STORE_CONNECT_KEY_ID}.p8"
-          printf '%s' "$APP_STORE_CONNECT_API_KEY_P8" > "$AUTH_KEY_PATH"
-          echo "AUTH_KEY_PATH=$AUTH_KEY_PATH" >> "$GITHUB_ENV"
+          sudo xcode-select -s "$(ls -d /Applications/Xcode*.app | sort -V | tail -1)"
+          xcodebuild -version
 
-      # Distribution signing uses a locally imported Apple Distribution
-      # certificate (.p12 secret) in a throwaway keychain. Cloud-MANAGED
-      # distribution certificates would need an Admin-role API key ("Cloud
-      # signing permission error" otherwise); with the cert present locally,
-      # automatic signing uses it and the App Manager key only has to
-      # create/download provisioning profiles, which it is allowed to do.
-      # The keychain is deleted in a post step and the runner is ephemeral.
-      - name: Install distribution certificate into temp keychain
-        env:
-          APPLE_DIST_CERT_P12_BASE64: ${{ secrets.APPLE_DIST_CERT_P12_BASE64 }}
-          APPLE_DIST_CERT_PASSWORD: ${{ secrets.APPLE_DIST_CERT_PASSWORD }}
-        run: |
-          KEYCHAIN_PATH="$RUNNER_TEMP/signing.keychain-db"
-          KEYCHAIN_PASSWORD="$(uuidgen)"
-          P12_PATH="$RUNNER_TEMP/dist.p12"
+      - name: Set up Ruby + bundler cache
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3'
+          bundler-cache: true
 
-          printf '%s' "$APPLE_DIST_CERT_P12_BASE64" | base64 --decode > "$P12_PATH"
+      - name: Install XcodeGen
+        run: brew install xcodegen
 
-          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
-          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-          security import "$P12_PATH" -k "$KEYCHAIN_PATH" \
-            -P "$APPLE_DIST_CERT_PASSWORD" \
-            -T /usr/bin/codesign -T /usr/bin/security -f pkcs12
-          # Allow codesign to use the key without a UI password prompt.
-          security set-key-partition-list -S apple-tool:,apple: \
-            -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH" > /dev/null
-          security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain-db
-          rm -f "$P12_PATH"
+      - name: Generate Xcode project
+        run: xcodegen generate
 
-          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
-          # Sanity check: fail here with a readable message rather than deep
-          # inside xcodebuild if the p12 didn't contain a signing identity.
-          security find-identity -v -p codesigning "$KEYCHAIN_PATH" | grep -q "Apple Distribution" \
-            || { echo "::error::No 'Apple Distribution' identity found in the imported .p12"; exit 1; }
-
-      # Mint the App Store provisioning profiles BEFORE the archive, because the
-      # archive is signed manually against them (below). exportArchive with
-      # automatic signing refuses to mint missing App Store profiles without
-      # cloud signing (Admin-only); minting them ourselves via the official ASC
-      # API needs only App Manager. Fixed profile names + delete-and-recreate
-      # make this idempotent; a rotated certificate self-heals. The names here
-      # must match PROVISIONING_PROFILE_SPECIFIER in project.yml and the
-      # provisioningProfiles map in the export options below.
-      - name: Create & install App Store provisioning profiles
-        env:
-          APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
-          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
-        run: |
-          CERT_PEM="$RUNNER_TEMP/dist-cert.pem"
-          security find-certificate -a -p "$KEYCHAIN_PATH" > "$CERT_PEM"
-          python3 scripts/create_appstore_profiles.py \
-            --key-path "$AUTH_KEY_PATH" \
-            --key-id "$APP_STORE_CONNECT_KEY_ID" \
-            --issuer-id "$APP_STORE_CONNECT_ISSUER_ID" \
-            --cert-pem "$CERT_PEM" \
-            --bundle-id fi.mailhub.everybytecounts \
-            --bundle-id fi.mailhub.everybytecounts.widget
-
-      # Diagnostic: decode each installed provisioning profile and print the
-      # Entitlements it authorizes. v1.3.8 signed cleanly against these profiles
-      # yet the app shipped without com.apple.security.application-groups — the
-      # signed binary carried only the profile's generic entitlements. A profile
-      # is minted fresh here from the App ID, so this shows the ground truth:
-      #   - App Groups ABSENT here  -> the App ID isn't handing the group to the
-      #     profile (App Groups capability enabled but the specific group not
-      #     associated, or the ASC API not including it) — a portal/App-ID fix.
-      #   - App Groups PRESENT here -> a deeper signing/export bug to chase.
-      # Read-only; it never fails the build (always exits 0).
-      - name: Log minted profile entitlements (diagnostic)
-        run: |
-          shopt -s nullglob
-          found=0
-          for f in "$HOME/Library/MobileDevice/Provisioning Profiles/"*.mobileprovision; do
-            found=1
-            security cms -D -i "$f" -o "$RUNNER_TEMP/pp.plist" 2>/dev/null || continue
-            NAME=$(/usr/libexec/PlistBuddy -c 'Print :Name' "$RUNNER_TEMP/pp.plist" 2>/dev/null || echo '?')
-            echo "----- profile: $NAME -----"
-            /usr/libexec/PlistBuddy -x -c 'Print :Entitlements' "$RUNNER_TEMP/pp.plist" 2>/dev/null \
-              || echo "(no Entitlements dict)"
-            if /usr/libexec/PlistBuddy -c 'Print :Entitlements:com.apple.security.application-groups' \
-                 "$RUNNER_TEMP/pp.plist" >/dev/null 2>&1; then
-              echo ">>> App Group: PRESENT"
-            else
-              echo ">>> App Group: ABSENT"
-            fi
-            echo "--------------------------------"
-          done
-          [ "$found" = 1 ] || echo "No installed provisioning profiles found."
-          exit 0
-
-      # Archive with real MANUAL signing — the standard Xcode "Archive" flow —
-      # using the Apple Distribution certificate already imported into the temp
-      # keychain and the profiles minted just above. This reuses one existing
-      # certificate, so it creates nothing against the portal and can never hit
-      # the certificate cap (the trap that automatic signing here fell into).
-      # CODE_SIGN_IDENTITY and the per-target profile names live in project.yml
-      # (Release config); DEVELOPMENT_TEAM is injected here so it stays out of
-      # the committed project. CURRENT_PROJECT_VERSION uses the run number so
-      # build numbers are unique and increase across uploads.
-      #
-      # NOTE: Xcode 26 strips com.apple.security.application-groups while
-      # generating the .xcent here — the archived app and widget come out without
-      # it even though the entitlements files request it and the minted profiles
-      # authorise it (proven by dumping the archived binaries and the .xcent).
-      # Declaring the App Groups capability on the targets (the SystemCapabilities
-      # entry Xcode's UI writes) does NOT stop it — we tried, and the group was
-      # still absent from the archive. The next step puts it back; see there.
-      - name: Build archive (App Store signed)
-        env:
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: |
-          xcodebuild archive \
-            -project EveryByteCounts.xcodeproj \
-            -scheme EveryByteCounts \
-            -configuration Release \
-            -destination 'generic/platform=iOS' \
-            -archivePath "$RUNNER_TEMP/EveryByteCounts.xcarchive" \
-            DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
-            MARKETING_VERSION="${VERSION_NUM}" \
-            CURRENT_PROJECT_VERSION="${{ github.run_number }}"
-
-      # Xcode dropped the App Group from the archived binaries (see the note on
-      # the archive step). Everything upstream is correct — the entitlements
-      # files request the group, the minted profiles authorise exactly it — and
-      # declaring the App Groups capability on the targets doesn't help either
-      # (confirmed by probing the archive on v1.3.13). Xcode 26's packaging
-      # strips it regardless. Rather than fight the packaging step, re-sign each
-      # archived binary with the group merged back into the entitlements it
-      # already carries.
-      #
-      # Why this survives to the shipped IPA: `xcodebuild -exportArchive`
-      # preserves entitlements that are already present in a signature (it only
-      # re-derives from profile defaults for code left unsigned in the archive).
-      # Same behaviour, and the same re-sign-with-entitlements workaround, is
-      # documented in tauri-apps/tauri#15663:
-      #   https://github.com/tauri-apps/tauri/issues/15663
-      #
-      # Sign the widget before the app (inside-out); reuse the Apple Distribution
-      # identity from the temp keychain. The embedded provisioning profile is
-      # left in place. The verify step below still gates the release, so a bad
-      # re-sign fails loudly instead of shipping.
-      - name: Force the App Group entitlement into the archived binaries
-        run: |
-          set -euo pipefail
-          GROUP="group.fi.mailhub.everybytecounts"
-          IDENTITY="Apple Distribution"
-          ARCH="$RUNNER_TEMP/EveryByteCounts.xcarchive/Products/Applications/EveryByteCounts.app"
-
-          resign() {
-            bundle="$1"
-            ent="$RUNNER_TEMP/resign-$(basename "$bundle").plist"
-            # Start from the entitlements Xcode already signed in (application-
-            # identifier, team-identifier, get-task-allow, beta-reports-active)
-            # so those are kept and only the missing App Group is added.
-            codesign -d --entitlements :- "$bundle" > "$ent" 2>/dev/null
-            plutil -convert xml1 "$ent"
-            /usr/libexec/PlistBuddy -c "Delete :com.apple.security.application-groups" "$ent" 2>/dev/null || true
-            /usr/libexec/PlistBuddy -c "Add :com.apple.security.application-groups array" "$ent"
-            /usr/libexec/PlistBuddy -c "Add :com.apple.security.application-groups:0 string $GROUP" "$ent"
-            codesign --force --sign "$IDENTITY" --keychain "$KEYCHAIN_PATH" \
-              --entitlements "$ent" "$bundle"
-            echo "re-signed $(basename "$bundle"); entitlements now:"
-            codesign -d --entitlements :- "$bundle" 2>/dev/null | plutil -p -
-          }
-
-          # Nested code (the widget) must be signed before the containing app.
-          for EXT in "$ARCH/PlugIns/"*.appex; do
-            [ -e "$EXT" ] && resign "$EXT"
-          done
-          resign "$ARCH"
-
-      # Export a signed IPA to disk (no upload) and confirm the App Group
-      # entitlement is embedded in both the app and the widget BEFORE anything
-      # ships. exportArchive fails if a profile doesn't grant a requested
-      # capability, and inspecting the binary also catches the inverse — an
-      # entitlements file that stopped requesting the group. The exported IPA is
-      # what actually ships, so that is what we inspect; a failure here stops the
-      # release before the upload step runs.
-      - name: Export signed IPA & verify App Group entitlement
-        env:
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
-          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
-        run: |
-          cat > "$RUNNER_TEMP/ExportOptions-verify.plist" <<PLIST
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0">
-          <dict>
-              <key>method</key>
-              <string>app-store-connect</string>
-              <key>teamID</key>
-              <string>${APPLE_TEAM_ID}</string>
-              <key>signingStyle</key>
-              <string>manual</string>
-              <key>signingCertificate</key>
-              <string>Apple Distribution</string>
-              <key>provisioningProfiles</key>
-              <dict>
-                  <key>fi.mailhub.everybytecounts</key>
-                  <string>CI AppStore fi.mailhub.everybytecounts</string>
-                  <key>fi.mailhub.everybytecounts.widget</key>
-                  <string>CI AppStore fi.mailhub.everybytecounts.widget</string>
-              </dict>
-              <key>destination</key>
-              <string>export</string>
-          </dict>
-          </plist>
-          PLIST
-
-          xcodebuild -exportArchive \
-            -archivePath "$RUNNER_TEMP/EveryByteCounts.xcarchive" \
-            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions-verify.plist" \
-            -exportPath "$RUNNER_TEMP/verify-export" \
-            -authenticationKeyPath "$AUTH_KEY_PATH" \
-            -authenticationKeyID "$APP_STORE_CONNECT_KEY_ID" \
-            -authenticationKeyIssuerID "$APP_STORE_CONNECT_ISSUER_ID"
-
-          IPA=$(ls "$RUNNER_TEMP/verify-export/"*.ipa | head -1)
-          unzip -qo "$IPA" -d "$RUNNER_TEMP/verify-ipa"
-          APP=$(ls -d "$RUNNER_TEMP/verify-ipa/Payload/"*.app | head -1)
-          for BUNDLE in "$APP" "$APP/PlugIns/"*.appex; do
-            NAME=$(basename "$BUNDLE")
-            # Dump the entitlements that were actually signed into the binary so
-            # the log shows exactly what shipped — the difference between a
-            # stripped App Group (portal capability missing) and a false alarm.
-            ENT="$RUNNER_TEMP/entitlements-$NAME.plist"
-            codesign -d --entitlements :- "$BUNDLE" > "$ENT" 2>/dev/null || true
-            echo "----- entitlements: $NAME -----"
-            plutil -p "$ENT" 2>/dev/null || cat "$ENT"
-            echo "--------------------------------"
-            if ! grep -q "group.fi.mailhub.everybytecounts" "$ENT"; then
-              echo "::error::$NAME is signed WITHOUT the group.fi.mailhub.everybytecounts App Group entitlement — persisted state would be lost on every app restart. In the Apple Developer portal, create the App Group 'group.fi.mailhub.everybytecounts' and enable the App Groups capability with that group on BOTH fi.mailhub.everybytecounts and fi.mailhub.everybytecounts.widget, so the minted profiles include it."
-              exit 1
-            fi
-            echo "OK: $NAME carries the App Group entitlement"
-          done
-
-      # destination=upload makes xcodebuild push the exported IPA straight to
-      # App Store Connect in the same step — no separate altool/Transporter
-      # call. Signing is manual: the certificate comes from the temp keychain,
-      # the profiles from the step above; the API key flags below are only for
-      # the upload leg.
-      - name: Export & upload to App Store Connect (TestFlight)
-        env:
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
-          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
-        run: |
-          cat > "$RUNNER_TEMP/ExportOptions.plist" <<PLIST
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0">
-          <dict>
-              <key>method</key>
-              <string>app-store-connect</string>
-              <key>teamID</key>
-              <string>${APPLE_TEAM_ID}</string>
-              <key>signingStyle</key>
-              <string>manual</string>
-              <key>signingCertificate</key>
-              <string>Apple Distribution</string>
-              <key>provisioningProfiles</key>
-              <dict>
-                  <key>fi.mailhub.everybytecounts</key>
-                  <string>CI AppStore fi.mailhub.everybytecounts</string>
-                  <key>fi.mailhub.everybytecounts.widget</key>
-                  <string>CI AppStore fi.mailhub.everybytecounts.widget</string>
-              </dict>
-              <key>destination</key>
-              <string>upload</string>
-          </dict>
-          </plist>
-          PLIST
-
-          xcodebuild -exportArchive \
-            -archivePath "$RUNNER_TEMP/EveryByteCounts.xcarchive" \
-            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
-            -exportPath "$RUNNER_TEMP/export" \
-            -authenticationKeyPath "$AUTH_KEY_PATH" \
-            -authenticationKeyID "$APP_STORE_CONNECT_KEY_ID" \
-            -authenticationKeyIssuerID "$APP_STORE_CONNECT_ISSUER_ID"
-
-      # Tear down every sensitive artifact this job wrote to the runner: the
-      # signing keychain, the ASC API .p8 key, and the dumped certificate PEM.
-      # always() so a failure earlier in the job still cleans up. The runner is
-      # ephemeral, so this is defense-in-depth, not the only safeguard.
-      - name: Delete signing material
-        if: always()
-        run: |
-          if [ -n "${KEYCHAIN_PATH:-}" ] && [ -f "$KEYCHAIN_PATH" ]; then
-            security delete-keychain "$KEYCHAIN_PATH"
-          fi
-          rm -rf "$RUNNER_TEMP/private_keys" "$RUNNER_TEMP/dist-cert.pem"
+      # Sync signing (match), archive, re-assert declared entitlements Xcode
+      # strips, export, and upload to TestFlight — all in the beta lane.
+      - name: Build & upload to TestFlight
+        run: bundle exec fastlane beta
 
       - name: Commit project.yml version bump
         run: |
