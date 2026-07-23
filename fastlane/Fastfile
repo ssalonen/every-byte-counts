@@ -18,7 +18,12 @@ WIDGET_TARGET = "EveryByteCountsWidgetExtension"
 platform :ios do
   desc "Sync signing material (read-only on CI) without building anything"
   lane :certificates do
-    setup_ci
+    # force: true so this also creates a dedicated, password-known keychain when
+    # run locally (e.g. seeding from a Mac). Without it, match installs into the
+    # login keychain and can't run `security set-key-partition-list`
+    # non-interactively — the identity never forms and match reports "could not
+    # find the newly generated certificate installed" (errSecInternalComponent).
+    setup_ci(force: true)
     match(api_key: asc_api_key, type: "appstore", readonly: FastlaneCore::Helper.ci?)
   end
 
