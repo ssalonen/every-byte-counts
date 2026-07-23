@@ -115,3 +115,8 @@ jobs:
           fail-on-severity: high
           deny-licenses: GPL-2.0-only, GPL-2.0-or-later, GPL-3.0-only, GPL-3.0-or-later, AGPL-3.0-only, AGPL-3.0-or-later
           comment-summary-in-pr: never
+          # highline (a fastlane transitive dep) is dual-licensed
+          # "GPL-2.0-only OR Ruby". We use it under the permissive Ruby arm, but
+          # dependency-review flags the dual license because one arm is GPL.
+          # Exempt just this package; the GPL/AGPL guard still applies to all others.
+          allow-dependencies-licenses: pkg:gem/highline
