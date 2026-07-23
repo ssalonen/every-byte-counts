@@ -116,29 +116,36 @@ jobs:
           [ "$found" = 1 ] || echo "No installed provisioning profiles found in either location."
           exit 0
 
-      # The exported IPA is what would ship. Dump the entitlements actually signed
-      # into the app and the widget, and fail if either lacks the App Group — the
-      # single question this probe exists to answer.
-      - name: Verify App Group entitlement in the IPA
+      # The exported IPA is what would ship. For each binary, dump the signed
+      # entitlements and fail if it is missing ANY key/value its declared
+      # .entitlements file requires — App Groups today, whatever is added later.
+      # Generic, so a future stripped capability fails here instead of shipping.
+      - name: Verify shipped entitlements match the declared files
         run: |
           set -euo pipefail
           IPA=$(ls build/*.ipa | head -1)
           unzip -qo "$IPA" -d "$RUNNER_TEMP/ipa"
           APP=$(ls -d "$RUNNER_TEMP/ipa/Payload/"*.app | head -1)
-          fail=0
-          for BUNDLE in "$APP" "$APP/PlugIns/"*.appex; do
-            NAME=$(basename "$BUNDLE")
+          check() {
+            bundle="$1"; declared="$2"
+            NAME=$(basename "$bundle")
             ENT="$RUNNER_TEMP/ent-$NAME.plist"
-            codesign -d --entitlements :- "$BUNDLE" > "$ENT" 2>/dev/null || true
+            codesign -d --entitlements :- "$bundle" > "$ENT" 2>/dev/null || true
+            plutil -convert xml1 "$ENT" 2>/dev/null || true
             echo "----- entitlements: $NAME -----"
             plutil -p "$ENT" 2>/dev/null || cat "$ENT"
             echo "--------------------------------"
-            if grep -q "group.fi.mailhub.everybytecounts" "$ENT"; then
-              echo "OK: $NAME carries the App Group entitlement"
+            if python3 scripts/entitlements.py check "$ENT" "$declared"; then
+              echo "OK: $NAME carries every declared entitlement"
             else
-              echo "::error::$NAME is signed WITHOUT group.fi.mailhub.everybytecounts"
-              fail=1
+              echo "::error::$NAME is missing declared entitlements (see above)"
+              return 1
             fi
+          }
+          fail=0
+          check "$APP" "App/EveryByteCounts/EveryByteCounts.entitlements" || fail=1
+          for EXT in "$APP/PlugIns/"*.appex; do
+            check "$EXT" "Widget/EveryByteCountsWidget/EveryByteCountsWidget.entitlements" || fail=1
           done
           exit $fail
 

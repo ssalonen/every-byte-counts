@@ -14,6 +14,9 @@ PROJECT   = "EveryByteCounts.xcodeproj"
 SCHEME    = "EveryByteCounts"
 APP_TARGET    = "EveryByteCounts"
 WIDGET_TARGET = "EveryByteCountsWidgetExtension"
+# Declared entitlements — the source of truth re-asserted after Xcode packaging.
+APP_ENTITLEMENTS    = "App/EveryByteCounts/EveryByteCounts.entitlements"
+WIDGET_ENTITLEMENTS = "Widget/EveryByteCountsWidget/EveryByteCountsWidget.entitlements"
 
 platform :ios do
   desc "Sync signing material (read-only on CI) without building anything"
@@ -69,12 +72,13 @@ platform :ios do
       ].join(" "),
     )
 
-    # 2. Xcode 26 strips com.apple.security.application-groups while packaging the
-    #    archive, even though the match profiles authorise it (proven by the
-    #    probe's profile dump). Re-sign each archived binary with the group merged
-    #    back into the entitlements it already carries; exportArchive preserves
-    #    entitlements already present in a signature.
-    force_app_group(archive_path)
+    # 2. Xcode 26 strips declared capabilities (e.g. App Groups) while packaging
+    #    the archive, even though the match profiles authorise them (proven by the
+    #    probe's profile dump). Re-assert each target's declared .entitlements onto
+    #    the archived binary before export; exportArchive preserves entitlements
+    #    already present in a signature. Generic — restores whatever the
+    #    .entitlements files declare, not just App Groups.
+    restore_declared_entitlements(archive_path)
 
     # 3. Export the signed IPA from the re-signed archive (no upload).
     build_app(
@@ -110,40 +114,44 @@ def asc_api_key
   )
 end
 
-# Re-sign the archived app + widget with the App Group merged back into the
-# entitlements Xcode 26 stripped during archiving. Widget (nested) first, then
-# the app — codesign must sign inside-out. Uses the Apple Distribution identity
-# that match installed into setup_ci's keychain.
-def force_app_group(archive_path)
+# Re-sign each archived bundle with its DECLARED entitlements merged back in.
+# Xcode 26 strips some declared capabilities (e.g. App Groups) while packaging
+# the archive even though the profile authorises them; this re-asserts whatever
+# the target's .entitlements file declares — App Groups today, whatever is added
+# later — while keeping Xcode-injected keys. exportArchive preserves entitlements
+# already present in a signature. Widget (nested) is signed before the app
+# (inside-out). Uses the Apple Distribution identity match installed into
+# setup_ci's keychain.
+def restore_declared_entitlements(archive_path)
   app = "#{archive_path}/Products/Applications/EveryByteCounts.app"
+  resign_with_declared(Dir["#{app}/PlugIns/*.appex"].first, File.expand_path(WIDGET_ENTITLEMENTS))
+  resign_with_declared(app, File.expand_path(APP_ENTITLEMENTS))
+end
+
+def resign_with_declared(bundle, declared)
+  return if bundle.nil?
+  tool = File.expand_path("scripts/entitlements.py")
   sh(<<~BASH)
     set -euo pipefail
-    GROUP="group.fi.mailhub.everybytecounts"
+    BUNDLE="#{bundle}"
+    DECLARED="#{declared}"
     IDENTITY="Apple Distribution"
-    APP="#{app}"
     KCARG=""
     [ -n "${MATCH_KEYCHAIN_NAME:-}" ] && KCARG="--keychain ${MATCH_KEYCHAIN_NAME}"
-
-    resign() {
-      bundle="$1"
-      ent="$(mktemp)"
-      # Start from the entitlements already signed in (application-identifier,
-      # team-identifier, get-task-allow, beta-reports-active) so only the missing
-      # App Group is added.
-      codesign -d --entitlements :- "$bundle" > "$ent" 2>/dev/null
-      plutil -convert xml1 "$ent"
-      /usr/libexec/PlistBuddy -c "Delete :com.apple.security.application-groups" "$ent" 2>/dev/null || true
-      /usr/libexec/PlistBuddy -c "Add :com.apple.security.application-groups array" "$ent"
-      /usr/libexec/PlistBuddy -c "Add :com.apple.security.application-groups:0 string $GROUP" "$ent"
-      codesign --force --sign "$IDENTITY" $KCARG --entitlements "$ent" "$bundle"
-      echo "re-signed $(basename "$bundle"); entitlements now:"
-      codesign -d --entitlements :- "$bundle" 2>/dev/null | plutil -p -
-    }
-
-    for EXT in "$APP/PlugIns/"*.appex; do
-      [ -e "$EXT" ] && resign "$EXT"
-    done
-    resign "$APP"
+    signed="$(mktemp)"
+    merged="$(mktemp)"
+    # Start from what Xcode signed in (identifiers, team-id, get-task-allow,
+    # beta-reports-active) and re-assert the declared capabilities on top.
+    codesign -d --entitlements :- "$BUNDLE" > "$signed" 2>/dev/null
+    plutil -convert xml1 "$signed"
+    if [ -f "$DECLARED" ]; then
+      python3 "#{tool}" merge "$signed" "$DECLARED" "$merged"
+    else
+      cp "$signed" "$merged"
+    fi
+    codesign --force --sign "$IDENTITY" $KCARG --entitlements "$merged" "$BUNDLE"
+    echo "re-signed $(basename "$BUNDLE"); entitlements now:"
+    codesign -d --entitlements :- "$BUNDLE" 2>/dev/null | plutil -p -
   BASH
 end
 
