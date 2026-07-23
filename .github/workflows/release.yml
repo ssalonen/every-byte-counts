@@ -13,14 +13,24 @@ on:
         required: true
         type: string
 
+# Serialize releases: never run two at once (racing TestFlight build numbers or
+# racing version-bump commits to main). cancel-in-progress: false so an in-flight
+# upload is queued behind, never killed mid-way.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 permissions:
-  contents: write  # needed to commit project.yml's version bump and create the GH release
+  contents: read
 
 jobs:
-  release:
+  # ── Sign, build, upload (needs macOS) ──────────────────────────────────────
+  build:
     name: Sign & upload to TestFlight
     runs-on: macos-latest
-
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      version_num: ${{ steps.version.outputs.version_num }}
     env:
       # fastlane (match, gym, pilot) reads all of these. Signing is fully
       # managed by match — no keychains, .p12s, or hand-minted profiles here.
@@ -30,15 +40,12 @@ jobs:
       APP_STORE_CONNECT_API_KEY_P8: ${{ secrets.APP_STORE_CONNECT_API_KEY_P8 }}
       MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
       MATCH_GIT_URL: ${{ secrets.MATCH_GIT_URL }}
-
     steps:
       - name: Checkout
         uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Get version from tag
+        id: version
         run: |
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then
             TAG="${GITHUB_REF#refs/tags/}"
@@ -46,33 +53,10 @@ jobs:
             TAG="${{ inputs.tag }}"
           fi
           VERSION_NUM="${TAG#v}"
-          echo "TAG=$TAG"                       >> "$GITHUB_ENV"
-          echo "VERSION_NUM=$VERSION_NUM"       >> "$GITHUB_ENV"
+          echo "tag=$TAG"                 >> "$GITHUB_OUTPUT"
+          echo "version_num=$VERSION_NUM" >> "$GITHUB_OUTPUT"
           # fastlane stamps this into the build (see build_signed_ipa).
           echo "MARKETING_VERSION=$VERSION_NUM" >> "$GITHUB_ENV"
-
-      - name: Find previous tag
-        run: |
-          PREV_TAG=$(git describe --abbrev=0 --tags HEAD~1 2>/dev/null || git describe --abbrev=0 --tags 2>/dev/null || echo "")
-          echo "PREV_TAG=$PREV_TAG" >> "$GITHUB_ENV"
-
-      - name: Generate changelog
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          if [ -z "${{ env.PREV_TAG }}" ]; then
-            CHANGELOG="(initial release)"
-          else
-            CHANGELOG=$(gh api repos/${{ github.repository }}/compare/${{ env.PREV_TAG }}...${{ env.TAG }} \
-              --jq '.commits | reverse | .[] | "• \(.commit.message | split("\n")[0]) (\(.author.login // .commit.author.name))"' \
-              2>/dev/null || echo "")
-            if [ -z "$CHANGELOG" ]; then
-              CHANGELOG=$(git log ${{ env.PREV_TAG }}..${{ env.TAG }} --pretty="• %s (%an)" 2>/dev/null || echo "(no changes detected)")
-            fi
-          fi
-          echo "CHANGELOG<<EOF" >> "$GITHUB_ENV"
-          echo "${CHANGELOG:-"(no changes detected)"}" >> "$GITHUB_ENV"
-          echo "EOF" >> "$GITHUB_ENV"
 
       # Fail fast with a clear message if the signing secrets aren't visible.
       # The classic trap: when this workflow runs via workflow_call, the caller
@@ -121,6 +105,48 @@ jobs:
       - name: Build & upload to TestFlight
         run: bundle exec fastlane beta
 
+  # ── Changelog, version bump, GitHub Release (git-only, cheap ubuntu) ────────
+  # Runs only after a successful upload, so a failed build never bumps the
+  # version or publishes a release.
+  publish:
+    name: Changelog, version bump & GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ needs.build.outputs.tag }}
+      VERSION_NUM: ${{ needs.build.outputs.version_num }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Find previous tag
+        run: |
+          PREV_TAG=$(git describe --abbrev=0 --tags HEAD~1 2>/dev/null || git describe --abbrev=0 --tags 2>/dev/null || echo "")
+          echo "PREV_TAG=$PREV_TAG" >> "$GITHUB_ENV"
+
+      - name: Generate changelog
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ -z "${{ env.PREV_TAG }}" ]; then
+            CHANGELOG="(initial release)"
+          else
+            CHANGELOG=$(gh api repos/${{ github.repository }}/compare/${{ env.PREV_TAG }}...${{ env.TAG }} \
+              --jq '.commits | reverse | .[] | "• \(.commit.message | split("\n")[0]) (\(.author.login // .commit.author.name))"' \
+              2>/dev/null || echo "")
+            if [ -z "$CHANGELOG" ]; then
+              CHANGELOG=$(git log ${{ env.PREV_TAG }}..${{ env.TAG }} --pretty="• %s (%an)" 2>/dev/null || echo "(no changes detected)")
+            fi
+          fi
+          echo "CHANGELOG<<EOF" >> "$GITHUB_ENV"
+          echo "${CHANGELOG:-"(no changes detected)"}" >> "$GITHUB_ENV"
+          echo "EOF" >> "$GITHUB_ENV"
+
       - name: Commit project.yml version bump
         run: |
           git config user.name  "github-actions[bot]"
@@ -128,8 +154,9 @@ jobs:
           git remote set-url origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
           git fetch origin main
           git checkout main
-          # Keep project.yml in sync so local builds produce the right version
-          sed -i "" "s/MARKETING_VERSION: \"[^\"]*\"/MARKETING_VERSION: \"${VERSION_NUM}\"/" project.yml
+          # GNU sed (ubuntu) — keep project.yml in sync so local builds produce
+          # the right version.
+          sed -i "s/MARKETING_VERSION: \"[^\"]*\"/MARKETING_VERSION: \"${VERSION_NUM}\"/" project.yml
           git add project.yml
           if git diff --cached --quiet; then
             echo "No changes to commit"
