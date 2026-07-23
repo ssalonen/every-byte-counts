@@ -113,11 +113,12 @@ jobs:
         uses: actions/dependency-review-action@v5
         with:
           fail-on-severity: high
-          # Only block on dependencies that actually ship. Build-time tooling
-          # (fastlane, in the Gemfile's :development group) is reported but not
-          # gated — its licenses don't bind the distributed app, and CI-tool CVEs
-          # are surfaced without blocking merges. The shipped surface is SwiftPM,
-          # kept dependency-free by the Supply-chain job above.
-          fail-on-scopes: runtime
           deny-licenses: GPL-2.0-only, GPL-2.0-or-later, GPL-3.0-only, GPL-3.0-or-later, AGPL-3.0-only, AGPL-3.0-or-later
           comment-summary-in-pr: never
+          # highline (a fastlane build-time dep) is dual-licensed
+          # "GPL-2.0-only OR Ruby"; we use the permissive Ruby arm, but
+          # dependency-review flags the GPL arm, so exempt just this package.
+          # NB: scoping fastlane to a Gemfile :development group does NOT help —
+          # GitHub's bundler dependency graph is built from Gemfile.lock, which
+          # has no group info, so every gem is 'runtime' scope regardless.
+          allow-dependencies-licenses: pkg:gem/highline
