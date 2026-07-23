@@ -82,6 +82,35 @@ jobs:
       - name: Build signed IPA (no upload)
         run: bundle exec fastlane probe
 
+      # Diagnostic: decode each match-installed provisioning profile and report
+      # whether it AUTHORIZES the App Group. This disambiguates the two causes of
+      # a stripped group: profile authorizes it -> Xcode strips at packaging (fix
+      # = re-sign); profile doesn't -> the App ID isn't associated with the group
+      # in the portal (fix = portal, and re-signing would be a false green). Never
+      # fails the build.
+      - name: Dump provisioning profile entitlements (diagnostic)
+        if: always()
+        run: |
+          shopt -s nullglob
+          found=0
+          for f in "$HOME/Library/MobileDevice/Provisioning Profiles/"*.mobileprovision; do
+            found=1
+            security cms -D -i "$f" -o /tmp/pp.plist 2>/dev/null || continue
+            NAME=$(/usr/libexec/PlistBuddy -c 'Print :Name' /tmp/pp.plist 2>/dev/null || echo '?')
+            echo "----- profile: $NAME -----"
+            /usr/libexec/PlistBuddy -c 'Print :Entitlements' /tmp/pp.plist 2>/dev/null \
+              || echo "(no Entitlements dict)"
+            if /usr/libexec/PlistBuddy -c 'Print :Entitlements:com.apple.security.application-groups' \
+                 /tmp/pp.plist >/dev/null 2>&1; then
+              echo ">>> App Group: AUTHORIZED by this profile"
+            else
+              echo ">>> App Group: NOT authorized by this profile"
+            fi
+            echo "--------------------------------"
+          done
+          [ "$found" = 1 ] || echo "No installed provisioning profiles found."
+          exit 0
+
       # The exported IPA is what would ship. Dump the entitlements actually signed
       # into the app and the widget, and fail if either lacks the App Group — the
       # single question this probe exists to answer.
