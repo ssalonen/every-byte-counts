@@ -10,15 +10,10 @@ name: Fastlane probe (App Group, no upload)
 on:
   # Push trigger so the probe can run from this feature branch without the
   # workflow file having to exist on the default branch (a workflow_dispatch
-  # limitation). Scoped to signing-relevant files so doc-only pushes don't fire
-  # it. Removed together with this whole file once release.yml runs `beta`.
+  # limitation). Any push you make to this branch fires it. Removed together
+  # with this whole file once release.yml runs `beta`.
   push:
     branches: [claude/signing-flow-fastlane-1h5i76]
-    paths:
-      - 'fastlane/**'
-      - 'project.yml'
-      - 'Gemfile'
-      - '.github/workflows/fastlane-probe.yml'
   workflow_dispatch:
     inputs:
       match_readonly:
