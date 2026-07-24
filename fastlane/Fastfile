@@ -12,9 +12,17 @@ PROJECT   = "EveryByteCounts.xcodeproj"
 SCHEME    = "EveryByteCounts"
 APP_TARGET    = "EveryByteCounts"
 WIDGET_TARGET = "EveryByteCountsWidgetExtension"
+
+# Repo root. fastlane runs lanes with its CWD set to the fastlane/ dir, so a
+# CWD-relative File.expand_path("App/…") resolves to fastlane/App/… — wrong.
+# Anchor every repo-file reference here instead. On CI this is the checkout root
+# (GITHUB_WORKSPACE); locally, the parent of this Fastfile's directory.
+REPO_ROOT = ENV["GITHUB_WORKSPACE"] || File.expand_path("..", __dir__)
+
 # Declared entitlements — the source of truth re-asserted after Xcode packaging.
-APP_ENTITLEMENTS    = "App/EveryByteCounts/EveryByteCounts.entitlements"
-WIDGET_ENTITLEMENTS = "Widget/EveryByteCountsWidget/EveryByteCountsWidget.entitlements"
+APP_ENTITLEMENTS    = File.join(REPO_ROOT, "App/EveryByteCounts/EveryByteCounts.entitlements")
+WIDGET_ENTITLEMENTS = File.join(REPO_ROOT, "Widget/EveryByteCountsWidget/EveryByteCountsWidget.entitlements")
+ENTITLEMENTS_TOOL   = File.join(REPO_ROOT, "scripts/entitlements.py")
 
 platform :ios do
   desc "Sync signing material (read-only on CI) without building anything"
@@ -61,7 +69,7 @@ def build_signed_ipa(key)
 
   marketing_version = ENV["MARKETING_VERSION"] || "0.0.1"
   build_number = ENV["GITHUB_RUN_NUMBER"] || "1"
-  archive_path = File.expand_path("build/EveryByteCounts.xcarchive")
+  archive_path = File.join(REPO_ROOT, "build/EveryByteCounts.xcarchive")
 
   # 1. Archive only — no IPA yet, so we can fix the archive before it's packaged.
   build_app(
@@ -88,7 +96,7 @@ def build_signed_ipa(key)
   build_app(
     skip_build_archive: true,
     archive_path: archive_path,
-    output_directory: "build",
+    output_directory: File.join(REPO_ROOT, "build"),
     output_name: "EveryByteCounts.ipa",
     export_method: "app-store",
     export_options: {
@@ -104,10 +112,8 @@ def build_signed_ipa(key)
   )
 
   # 4. Gate: fail before upload if the exported IPA is missing any declared
-  #    entitlement (e.g. the App Group Xcode strips) — so a bad re-sign can
-  #    never ship. Use gym's authoritative output path: fastlane's Ruby CWD is
-  #    the fastlane/ dir, but gym writes the IPA relative to the project root, so
-  #    a File.expand_path("build/…") guess points at the wrong place.
+  #    entitlement (e.g. the App Group Xcode strips) — so a bad re-sign can never
+  #    ship. Use gym's authoritative output path from lane_context.
   ipa = Fastlane::Actions.lane_context[Fastlane::Actions::SharedValues::IPA_OUTPUT_PATH]
   verify_declared_entitlements(ipa)
   ipa
@@ -117,9 +123,9 @@ end
 # carry every key/value their .entitlements file declares. Raises (failing the
 # lane) via scripts/entitlements.py, which exits non-zero on a missing entry.
 def verify_declared_entitlements(ipa)
-  tool       = File.expand_path("scripts/entitlements.py")
-  app_ent    = File.expand_path(APP_ENTITLEMENTS)
-  widget_ent = File.expand_path(WIDGET_ENTITLEMENTS)
+  tool       = ENTITLEMENTS_TOOL
+  app_ent    = APP_ENTITLEMENTS
+  widget_ent = WIDGET_ENTITLEMENTS
   sh(<<~BASH)
     set -euo pipefail
     IPA="#{ipa}"
@@ -165,13 +171,12 @@ end
 # setup_ci's keychain.
 def restore_declared_entitlements(archive_path)
   app = "#{archive_path}/Products/Applications/EveryByteCounts.app"
-  resign_with_declared(Dir["#{app}/PlugIns/*.appex"].first, File.expand_path(WIDGET_ENTITLEMENTS))
-  resign_with_declared(app, File.expand_path(APP_ENTITLEMENTS))
+  resign_with_declared(Dir["#{app}/PlugIns/*.appex"].first, WIDGET_ENTITLEMENTS)
+  resign_with_declared(app, APP_ENTITLEMENTS)
 end
 
 def resign_with_declared(bundle, declared)
   return if bundle.nil?
-  tool = File.expand_path("scripts/entitlements.py")
   sh(<<~BASH)
     set -euo pipefail
     BUNDLE="#{bundle}"
@@ -179,17 +184,17 @@ def resign_with_declared(bundle, declared)
     IDENTITY="Apple Distribution"
     KCARG=""
     [ -n "${MATCH_KEYCHAIN_NAME:-}" ] && KCARG="--keychain ${MATCH_KEYCHAIN_NAME}"
+    # Fail loudly rather than ship without the declared capabilities: if the
+    # entitlements file can't be found, the re-sign would otherwise silently
+    # leave the App Group off the binary.
+    [ -f "$DECLARED" ] || { echo "::error::declared entitlements not found: $DECLARED"; exit 1; }
     signed="$(mktemp)"
     merged="$(mktemp)"
     # Start from what Xcode signed in (identifiers, team-id, get-task-allow,
     # beta-reports-active) and re-assert the declared capabilities on top.
     codesign -d --entitlements :- "$BUNDLE" > "$signed" 2>/dev/null
     plutil -convert xml1 "$signed"
-    if [ -f "$DECLARED" ]; then
-      python3 "#{tool}" merge "$signed" "$DECLARED" "$merged"
-    else
-      cp "$signed" "$merged"
-    fi
+    python3 "#{ENTITLEMENTS_TOOL}" merge "$signed" "$DECLARED" "$merged"
     codesign --force --sign "$IDENTITY" $KCARG --entitlements "$merged" "$BUNDLE"
     echo "re-signed $(basename "$BUNDLE"); entitlements now:"
     codesign -d --entitlements :- "$BUNDLE" 2>/dev/null | plutil -p -
