@@ -113,12 +113,12 @@ jobs:
         uses: actions/dependency-review-action@v5
         with:
           fail-on-severity: high
-          deny-licenses: GPL-2.0-only, GPL-2.0-or-later, GPL-3.0-only, GPL-3.0-or-later, AGPL-3.0-only, AGPL-3.0-or-later
           comment-summary-in-pr: never
-          # highline (a fastlane build-time dep) is dual-licensed
-          # "GPL-2.0-only OR Ruby"; we use the permissive Ruby arm, but
-          # dependency-review flags the GPL arm, so exempt just this package.
-          # NB: scoping fastlane to a Gemfile :development group does NOT help —
-          # GitHub's bundler dependency graph is built from Gemfile.lock, which
-          # has no group info, so every gem is 'runtime' scope regardless.
-          allow-dependencies-licenses: pkg:gem/highline
+          # Positive allow-list: only these licenses are permitted, so anything
+          # copyleft (GPL/AGPL/…) fails by omission. These are all the licenses
+          # actually present across the fastlane toolchain — every one permissive.
+          # highline is dual-licensed "GPL-2.0-only OR Ruby" (GitHub reports the
+          # full expression; rubygems records it as just Ruby); we allow it under
+          # the permissive Ruby arm by listing the expression verbatim. Gems whose
+          # license GitHub can't detect are skipped by the action, not failed.
+          allow-licenses: MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause, MPL-2.0, Ruby, GPL-2.0-only OR Ruby
