@@ -116,9 +116,11 @@ jobs:
           comment-summary-in-pr: never
           # Positive allow-list: only these licenses are permitted, so anything
           # copyleft (GPL/AGPL/…) fails by omission. These are all the licenses
-          # actually present across the fastlane toolchain — every one permissive.
-          # highline is dual-licensed "GPL-2.0-only OR Ruby" (GitHub reports the
-          # full expression; rubygems records it as just Ruby); we allow it under
-          # the permissive Ruby arm by listing the expression verbatim. Gems whose
+          # present across the fastlane toolchain — every one permissive (the JSON
+          # license is non-copyleft). Two gems carry SPDX *expressions* GitHub
+          # reports verbatim: highline "GPL-2.0-only OR Ruby" (fine via the Ruby
+          # arm) and multi_json "JSON AND MIT"; both the component licenses (Ruby,
+          # JSON) and the literal expressions are listed so it passes whether the
+          # action parses the expression or matches it literally. Gems whose
           # license GitHub can't detect are skipped by the action, not failed.
-          allow-licenses: MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause, MPL-2.0, Ruby, GPL-2.0-only OR Ruby
+          allow-licenses: MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause, MPL-2.0, Ruby, JSON, GPL-2.0-only OR Ruby, JSON AND MIT
