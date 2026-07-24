@@ -22,7 +22,7 @@ jobs:
       new_tag: ${{ steps.version.outputs.new_tag }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
