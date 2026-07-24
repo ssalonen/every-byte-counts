@@ -1,0 +1,15 @@
+# match stores the distribution cert + App Store profiles, encrypted, in a
+# separate private git repo (MATCH_GIT_URL, an SSH URL). CI reads it via a
+# read-only deploy key loaded into the ssh-agent.
+#
+# BOTH bundle IDs must be listed. If the widget extension's id is omitted, match
+# silently skips its profile and the build later fails with a *misleading*
+# "profile doesn't support the App Group" error pointing at the app, not the
+# missing widget profile. (See docs/FASTLANE-MIGRATION.md, Theme B.)
+git_url(ENV["MATCH_GIT_URL"])
+storage_mode("git")
+type("appstore")
+app_identifier([
+  "fi.mailhub.everybytecounts",
+  "fi.mailhub.everybytecounts.widget",
+])
