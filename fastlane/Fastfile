@@ -1,10 +1,8 @@
 # fastlane lanes for Every Byte Counts (iOS only).
 #
 # `beta` is the release lane (called by release.yml): sync signing, build a
-# signed IPA, and upload to TestFlight. `probe` is a temporary, no-upload
-# variant that leaves the IPA on disk so fastlane-probe.yml can verify the
-# entitlements without shipping — deleted once the first real release confirms
-# the upload leg. Both share build_signed_ipa so they can't drift.
+# signed IPA, verify it carries every declared entitlement, and upload to
+# TestFlight. `certificates` seeds/syncs signing (e.g. from a Mac).
 
 default_platform(:ios)
 
@@ -44,23 +42,12 @@ platform :ios do
       skip_waiting_for_build_processing: true,
     )
   end
-
-  # TEMPORARY diagnostic lane: the same signed build as `beta` but WITHOUT the
-  # upload, so fastlane-probe.yml can verify the shipped entitlements cheaply and
-  # with no risk of a stray TestFlight upload. Deleted once the first real
-  # release confirms the upload leg.
-  desc "TEMPORARY: build a signed IPA WITHOUT uploading, for entitlement checks"
-  lane :probe do
-    setup_ci
-    build_signed_ipa(asc_api_key)
-    UI.success("IPA built at build/EveryByteCounts.ipa — the workflow verifies the entitlements next.")
-  end
 end
 
-# Sync signing and produce a signed App-Store IPA at build/EveryByteCounts.ipa.
-# Shared by `beta` (which uploads it) and `probe` (which only verifies it), so
-# the release build and the checked build can never diverge. MARKETING_VERSION
-# comes from release.yml (the tag); build number from the CI run number.
+# Sync signing and produce a signed App-Store IPA at build/EveryByteCounts.ipa,
+# then verify it carries every declared entitlement before it can be uploaded.
+# MARKETING_VERSION comes from release.yml (the tag); build number from the CI
+# run number.
 def build_signed_ipa(key)
   # readonly by default. Set MATCH_READONLY=false (needs a *write* deploy key and
   # an API key allowed to manage profiles) to regenerate profiles from CI after
@@ -115,6 +102,41 @@ def build_signed_ipa(key)
       },
     },
   )
+
+  # 4. Gate: fail before upload if the exported IPA is missing any declared
+  #    entitlement (e.g. the App Group Xcode strips) — so a bad re-sign can
+  #    never ship.
+  verify_declared_entitlements(File.expand_path("build/EveryByteCounts.ipa"))
+end
+
+# Inspect the exported IPA and fail unless the app and each embedded extension
+# carry every key/value their .entitlements file declares. Raises (failing the
+# lane) via scripts/entitlements.py, which exits non-zero on a missing entry.
+def verify_declared_entitlements(ipa)
+  tool       = File.expand_path("scripts/entitlements.py")
+  app_ent    = File.expand_path(APP_ENTITLEMENTS)
+  widget_ent = File.expand_path(WIDGET_ENTITLEMENTS)
+  sh(<<~BASH)
+    set -euo pipefail
+    IPA="#{ipa}"
+    WORK="$(mktemp -d)"
+    unzip -qo "$IPA" -d "$WORK"
+    APP="$(ls -d "$WORK/Payload/"*.app | head -1)"
+    check() {
+      bundle="$1"; declared="$2"
+      ent="$(mktemp)"
+      codesign -d --entitlements :- "$bundle" > "$ent" 2>/dev/null || true
+      plutil -convert xml1 "$ent" 2>/dev/null || true
+      echo "----- entitlements: $(basename "$bundle") -----"
+      plutil -p "$ent" 2>/dev/null || cat "$ent"
+      python3 "#{tool}" check "$ent" "$declared"
+      echo "OK: $(basename "$bundle") carries every declared entitlement"
+    }
+    check "$APP" "#{app_ent}"
+    for ext in "$APP/PlugIns/"*.appex; do
+      [ -e "$ext" ] && check "$ext" "#{widget_ent}"
+    done
+  BASH
 end
 
 # App Store Connect API key from the existing repo secrets. key_content is the
