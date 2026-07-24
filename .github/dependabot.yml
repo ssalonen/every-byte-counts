@@ -1,0 +1,22 @@
+# Weekly dependency-update PRs. Keeps the fastlane toolchain (Gemfile.lock) and
+# the pinned GitHub Actions current without manual bumps.
+#
+# Update PRs use chore(deps)/ci(deps) prefixes so the Conventional-Commits
+# auto-release in ci.yml never cuts an app release off a dependency bump.
+version: 2
+updates:
+  - package-ecosystem: "bundler"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci(deps)"

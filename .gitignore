@@ -17,3 +17,9 @@ build/
 
 # Python bytecode (CI helper scripts)
 __pycache__/
+
+# fastlane
+vendor/
+fastlane/report.xml
+fastlane/README.md
+*.ipa

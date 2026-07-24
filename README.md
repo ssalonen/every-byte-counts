@@ -149,7 +149,7 @@ GitHub Actions (`.github/workflows/`), adapted from `ssalonen/unarchiver`:
 | Workflow | What it does |
 |----------|--------------|
 | `ci.yml` | Runs `swift test --enable-code-coverage` on the core, **gates line coverage ≥ 95%**, posts a coverage table on PRs; builds the app + widget (XcodeGen → `xcodebuild`) against the iOS Simulator SDK; on green `main`, auto-computes the next version from **Conventional Commits** and triggers a release. |
-| `release.yml` | Archives, signs with the real Apple Distribution identity (automatic signing via an App Store Connect API key — no certs/profiles stored in the repo), and uploads straight to **TestFlight**. Reusable via `workflow_call`. |
+| `release.yml` | Runs **fastlane** `beta`: [`match`](https://docs.fastlane.tools/actions/match/) syncs the distribution cert + profiles from a private signing repo, `gym` archives and signs, the declared entitlements Xcode strips are re-asserted, and the build is uploaded to **TestFlight**. Reusable via `workflow_call`. |
 | `bump-version.yml` | Manual `workflow_dispatch` (patch/minor/major) — the first-release escape hatch. |
 | `security.yml` | CodeQL (Swift, `security-extended`), a supply-chain guard that keeps the core dependency-free, and PR dependency review. |
 
@@ -166,39 +166,48 @@ to App Store Connect, where they're available to TestFlight testers within
 minutes and can be submitted for App Store review whenever you're ready — the
 same signed build serves both, there's no separate "beta" vs "release" build.
 
-**One-time setup**, before the pipeline can sign and upload anything:
+Signing is managed by fastlane [`match`](https://docs.fastlane.tools/actions/match/):
+the distribution certificate and provisioning profiles live, encrypted, in a
+separate private git repo, and both CI and local machines sync them with one
+command. The full rationale and step-by-step is in
+[`docs/FASTLANE-MIGRATION.md`](docs/FASTLANE-MIGRATION.md); the essentials:
 
 1. **Register the App IDs** in the [Apple Developer
-   portal](https://developer.apple.com/account/resources/identifiers/list)
-   (Certificates, IDs & Profiles → Identifiers), with the **App Groups**
-   capability enabled on both, sharing the group `group.fi.mailhub.everybytecounts`:
+   portal](https://developer.apple.com/account/resources/identifiers/list),
+   with the **App Groups** capability enabled **and the group
+   `group.fi.mailhub.everybytecounts` associated** on both (associating the
+   group — not just enabling the capability — is what makes the profiles carry
+   it):
    - `fi.mailhub.everybytecounts` (app)
    - `fi.mailhub.everybytecounts.widget` (widget extension)
 2. **Create the app record** in [App Store
-   Connect](https://appstoreconnect.apple.com/apps) (My Apps → **+** → New
-   App) with bundle ID `fi.mailhub.everybytecounts` — the record must exist
-   *before* the first CI upload.
-   - Add a **1024×1024 App Icon** to an `Assets.xcassets` catalog in the app
-     target — there isn't one in this repo yet, and both TestFlight and App
-     Store submissions require it. (Not something CI can generate for you.)
-3. **Generate an App Store Connect API key** (Users and Access → Integrations
-   → **Keys**, or **Team Keys**) with the **Developer** role — that's the
-   minimum role that can both manage signing certificates/profiles and upload
-   builds. Note the **Key ID** and **Issuer ID**, and download the `.p8` file
-   (Apple only lets you download it once).
-4. **Add repo secrets** (Settings → Secrets and variables → Actions):
+   Connect](https://appstoreconnect.apple.com/apps) with bundle ID
+   `fi.mailhub.everybytecounts` — it must exist before the first upload. Add a
+   **1024×1024 App Icon** to the app target's asset catalog (required for
+   TestFlight; CI can't generate it).
+3. **Generate an App Store Connect API key** (Users and Access → Integrations →
+   **Keys**) with the **Developer** role — enough to manage profiles and upload.
+   Note the **Key ID** / **Issuer ID** and download the `.p8` (once only).
+4. **Seed match once** from a Mac: create a private signing repo, add a
+   read-only SSH deploy key, then `bundle exec fastlane certificates` to create
+   and store the cert + profiles (see the migration doc for exact commands).
+5. **Add repo secrets** (Settings → Secrets and variables → Actions):
    | Secret | Value |
    |--------|-------|
-   | `APPLE_TEAM_ID` | Your Developer Program Team ID (Membership page) |
+   | `APPLE_TEAM_ID` | Your Developer Program Team ID |
    | `APP_STORE_CONNECT_KEY_ID` | The API key's Key ID |
    | `APP_STORE_CONNECT_ISSUER_ID` | The API key's Issuer ID |
-   | `APP_STORE_CONNECT_API_KEY_P8` | The full contents of the downloaded `.p8` file |
-5. **Add yourself as an internal tester** in App Store Connect → TestFlight so
-   new builds reach your device without waiting on Beta App Review.
+   | `APP_STORE_CONNECT_API_KEY_P8` | The full contents of the `.p8` file |
+   | `MATCH_PASSWORD` | Passphrase encrypting the signing repo |
+   | `MATCH_GIT_URL` | The signing repo's SSH URL (`git@github.com:…`) |
+   | `MATCH_REPO_KEY` | The **private** SSH deploy key for the signing repo |
+6. **Add yourself as an internal tester** in App Store Connect → TestFlight.
 
-After that, every auto-release (or a manual tag push) builds, signs, and
-uploads a new TestFlight build with no further manual signing steps — nothing
-Apple-specific is ever committed to the repo.
+After that, every auto-release (or a manual tag push) runs `fastlane beta` to
+sync signing, build, and upload — nothing Apple-specific is committed to the repo.
+
+**Local development signing:** a teammate runs `bundle exec fastlane certificates`
+once and has the exact same cert + profiles as CI — no portal clicking.
 
 ---
 
