@@ -152,6 +152,15 @@ def verify_declared_entitlements(ipa)
       echo "----- signature entitlements: $(basename "$bundle") -----"
       plutil -p "$ent" 2>/dev/null || cat "$ent"
       python3 "#{tool}" check "$ent" "$declared"
+      # Parser-independent backstop: the plist check alone once reported OK on a
+      # signature that visibly lacked the App Group, so also grep the normalised
+      # dump for every declared group string.
+      groups="$(mktemp)"
+      grep -oE 'group\\.[A-Za-z0-9._-]+' "$declared" | sort -u > "$groups" || true
+      while IFS= read -r grp; do
+        [ -z "$grp" ] && continue
+        grep -q "$grp" "$ent" || { echo "::error::$(basename "$bundle"): shipped signature is missing App Group '$grp' — would crash on launch (nil App Group container)."; exit 1; }
+      done < "$groups"
       echo "OK: $(basename "$bundle") signature carries every declared entitlement"
 
       # 2. Embedded provisioning profile must AUTHORISE every declared
@@ -220,9 +229,32 @@ def resign_with_declared(bundle, declared)
     codesign -d --entitlements :- "$BUNDLE" > "$signed" 2>/dev/null
     plutil -convert xml1 "$signed"
     python3 "#{ENTITLEMENTS_TOOL}" merge "$signed" "$DECLARED" "$merged"
-    codesign --force --sign "$IDENTITY" $KCARG --entitlements "$merged" "$BUNDLE"
+    echo "entitlements handed to codesign for $(basename "$BUNDLE"):"
+    plutil -p "$merged"
+    # --generate-entitlement-der is load-bearing on Xcode 15+/26: iOS enforces
+    # the DER-encoded entitlements at runtime, and without this flag codesign
+    # writes our XML entitlements but regenerates the DER blob from a reduced
+    # set — silently dropping com.apple.security.application-groups. That shipped
+    # a binary that passed `codesign -d` yet returned nil from
+    # containerURL(forSecurityApplicationGroupIdentifier:) on device (the
+    # v1.4.2/v1.4.3 crash). Forcing DER generation from "$merged" keeps the group.
+    codesign --force --sign "$IDENTITY" $KCARG --generate-entitlement-der --entitlements "$merged" "$BUNDLE"
+
     echo "re-signed $(basename "$BUNDLE"); entitlements now:"
-    codesign -d --entitlements :- "$BUNDLE" 2>/dev/null | plutil -p -
+    after="$(mktemp)"
+    codesign -d --entitlements :- "$BUNDLE" > "$after" 2>/dev/null
+    plutil -convert xml1 "$after" 2>/dev/null || true
+    plutil -p "$after" || cat "$after"
+    # Loud, parser-independent guard: every App Group declared in "$DECLARED"
+    # MUST actually be present in the re-signed binary's entitlements. grep the
+    # normalised dump so a silent drop fails the build here instead of shipping
+    # a crash-on-launch binary.
+    groups="$(mktemp)"
+    grep -oE 'group\\.[A-Za-z0-9._-]+' "$DECLARED" | sort -u > "$groups" || true
+    while IFS= read -r grp; do
+      [ -z "$grp" ] && continue
+      grep -q "$grp" "$after" || { echo "::error::$(basename "$BUNDLE"): re-sign did NOT retain App Group '$grp'. codesign dropped it despite --generate-entitlement-der; the build must not ship."; exit 1; }
+    done < "$groups"
   BASH
 end
 
