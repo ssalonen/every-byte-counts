@@ -120,8 +120,19 @@ def build_signed_ipa(key)
 end
 
 # Inspect the exported IPA and fail unless the app and each embedded extension
-# carry every key/value their .entitlements file declares. Raises (failing the
-# lane) via scripts/entitlements.py, which exits non-zero on a missing entry.
+# carry every key/value their .entitlements file declares — in BOTH the code
+# signature AND the embedded provisioning profile. Raises (failing the lane) via
+# scripts/entitlements.py, which exits non-zero on a missing entry.
+#
+# The two-place check matters: a capability in the signature is necessary but
+# NOT sufficient. At runtime iOS grants an entitlement only if the embedded
+# provisioning profile also authorises it, so a build can carry the App Group in
+# its signature (what `codesign -d` and the old check saw) yet have
+# containerURL(forSecurityApplicationGroupIdentifier:) return nil on device
+# because the profile doesn't list the group — which crashes the app on launch
+# (fatalError in DashboardModel). match manages profiles but NOT App-ID
+# capabilities, so if App Groups isn't enabled on the App IDs the minted
+# profiles silently omit it. This gate turns that into a build-time failure.
 def verify_declared_entitlements(ipa)
   tool       = ENTITLEMENTS_TOOL
   app_ent    = APP_ENTITLEMENTS
@@ -134,13 +145,27 @@ def verify_declared_entitlements(ipa)
     APP="$(ls -d "$WORK/Payload/"*.app | head -1)"
     check() {
       bundle="$1"; declared="$2"
+      # 1. Code signature must carry every declared entitlement.
       ent="$(mktemp)"
       codesign -d --entitlements :- "$bundle" > "$ent" 2>/dev/null || true
       plutil -convert xml1 "$ent" 2>/dev/null || true
-      echo "----- entitlements: $(basename "$bundle") -----"
+      echo "----- signature entitlements: $(basename "$bundle") -----"
       plutil -p "$ent" 2>/dev/null || cat "$ent"
       python3 "#{tool}" check "$ent" "$declared"
-      echo "OK: $(basename "$bundle") carries every declared entitlement"
+      echo "OK: $(basename "$bundle") signature carries every declared entitlement"
+
+      # 2. Embedded provisioning profile must AUTHORISE every declared
+      #    (capability) entitlement — else iOS strips it at runtime.
+      prof="$(mktemp)"; prof_ent="$(mktemp)"
+      security cms -D -i "$bundle/embedded.mobileprovision" > "$prof" 2>/dev/null
+      /usr/libexec/PlistBuddy -x -c "Print :Entitlements" "$prof" > "$prof_ent"
+      echo "----- provisioning-profile entitlements: $(basename "$bundle") -----"
+      plutil -p "$prof_ent" 2>/dev/null || cat "$prof_ent"
+      if ! python3 "#{tool}" check "$prof_ent" "$declared"; then
+        echo "::error::$(basename "$bundle"): its embedded provisioning profile does NOT authorise a declared entitlement (e.g. the App Group). iOS will strip it at runtime and the app will crash on launch. Enable the App Groups capability (with group.fi.mailhub.everybytecounts) on BOTH App IDs in the Developer portal, then regenerate the match profiles (MATCH_READONLY=false, or 'fastlane match appstore --force')."
+        exit 1
+      fi
+      echo "OK: $(basename "$bundle") profile authorises every declared entitlement"
     }
     check "$APP" "#{app_ent}"
     for ext in "$APP/PlugIns/"*.appex; do

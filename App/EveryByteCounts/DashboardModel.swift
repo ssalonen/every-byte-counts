@@ -14,35 +14,32 @@ final class DashboardModel: ObservableObject {
     @Published private(set) var history: [CycleSummary] = []
     @Published var plan: PlanConfig = .default
 
-    private let service: MobileDataService
+    /// nil when the shared App Group container can't be resolved at launch. The
+    /// container is the app's only persistent storage, so a nil here means the
+    /// build is signed without the group.fi.mailhub.everybytecounts entitlement
+    /// — a misconfiguration no runtime workaround can fix. Rather than crash, the
+    /// app presents a blocking error screen (see `EveryByteCountsApp` /
+    /// `StartupErrorView`); every method below no-ops safely while it's nil.
+    private let service: MobileDataService?
+
+    /// Whether the live data service is available. `false` means the shared
+    /// storage couldn't be opened and the UI should show the startup error
+    /// screen instead of the dashboard.
+    var isStorageAvailable: Bool { service != nil }
 
     /// - Parameter service: injected by tests. Production passes nothing and the
-    ///   live App Group service is used.
+    ///   live App Group service is used (nil if the container is unavailable).
     init(service: MobileDataService? = nil) {
-        if let service {
-            self.service = service
-        } else if let live = MobileDataService.live(appGroupIdentifier: AppConstants.appGroupIdentifier) {
-            self.service = live
-        } else {
-            // The App Group container is the app's only persistent storage. A nil
-            // here means the build is signed without the
-            // group.fi.mailhub.everybytecounts entitlement — a misconfiguration
-            // no runtime workaround can fix, so fail loudly at startup rather
-            // than run in a state that can only lose data. The release
-            // pipeline's entitlement check is meant to catch this even earlier.
-            fatalError("""
-                App Group '\(AppConstants.appGroupIdentifier)' is unavailable. \
-                The app is signed without its App Group entitlement, so there is \
-                no persistent storage. Enable the App Groups capability for both \
-                bundle IDs in the Developer portal and re-sign.
-                """)
+        self.service = service ?? MobileDataService.live(appGroupIdentifier: AppConstants.appGroupIdentifier)
+        if let service = self.service {
+            self.plan = service.currentState().plan
         }
-        self.plan = self.service.currentState().plan
     }
 
     /// Called when the app foregrounds: sample, post any alerts, refresh UI and
     /// nudge the widget to reload (design §1 sampling moment (a)).
     func onForeground() {
+        guard let service else { return }
         if let result = service.sample() {
             postAlerts(result.pendingAlerts)
         }
@@ -51,12 +48,14 @@ final class DashboardModel: ObservableObject {
     }
 
     func refresh() {
+        guard let service else { return }
         report = service.report()
         history = service.cycleHistory()
         plan = service.currentState().plan
     }
 
     func savePlan(_ newPlan: PlanConfig) {
+        guard let service else { return }
         service.updatePlan { $0 = newPlan }
         refresh()
         WidgetCenter.shared.reloadAllTimelines()
@@ -66,6 +65,7 @@ final class DashboardModel: ObservableObject {
     /// mid-cycle install). Returns whether the calibration could be applied.
     @discardableResult
     func calibrate(usedThisCycleGB: Double) -> Bool {
+        guard let service else { return false }
         let applied = service.calibrate(usedThisCycle: DataSize(gigabytes: usedThisCycleGB))
         refresh()
         WidgetCenter.shared.reloadAllTimelines()
