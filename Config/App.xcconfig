@@ -1,0 +1,14 @@
+// Build settings for the EveryByteCounts app target.
+// Version settings come from Config/Version.xcconfig, applied project-wide.
+
+// Points at the checked-in entitlements file that declares the shared App Group.
+//
+// This is deliberately NOT XcodeGen's `entitlements:` target key. That key means
+// "generate this plist", and with no `properties:` XcodeGen overwrites the file
+// at that path with an empty <dict/> on every `xcodegen generate` — silently
+// dropping the App Group from every signed release while all the CI entitlement
+// checks still passed (they compared the build against the same emptied file).
+// Same reason INFOPLIST_FILE is used instead of `info:` (commit 7cdd513).
+//
+// Path is relative to SRCROOT (the repo root, where the .xcodeproj is generated).
+CODE_SIGN_ENTITLEMENTS = App/EveryByteCounts/EveryByteCounts.entitlements

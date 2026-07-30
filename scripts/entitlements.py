@@ -1,23 +1,18 @@
 #!/usr/bin/env python3
-"""Entitlement helpers for the re-sign workaround.
-
-Xcode 26 strips declared capabilities (e.g. App Groups) while packaging the
-archive, even when the provisioning profile authorises them. The release build
-re-asserts each target's declared entitlements onto the archived binary before
-export; these helpers do the plist work.
-
-  entitlements.py merge <signed.plist> <declared.entitlements> <out.plist>
-      Merge the declared keys onto the entitlements already signed into the
-      binary (declared wins) and write <out.plist>. Xcode-injected keys the
-      declared file doesn't mention -- application-identifier,
-      com.apple.developer.team-identifier, get-task-allow, beta-reports-active,
-      keychain-access-groups -- are preserved.
+"""Verify a signed binary carries the entitlements its target declares.
 
   entitlements.py check <signed.plist> <declared.entitlements>
       Exit non-zero (with a message) if any key, or any value of an array key,
       declared in the target's .entitlements file is missing from the signed
-      set. Gates the build so a future stripped capability fails loudly instead
-      of shipping silently.
+      set. Also exits non-zero if the declared file is empty or unparseable —
+      an empty declared set would otherwise make every check trivially pass.
+
+That last guard is not hypothetical. XcodeGen's `entitlements:` project.yml key
+*generates* the plist at the given path, and with no `properties:` it overwrote
+both checked-in .entitlements files with an empty dict on every
+`xcodegen generate`. Releases were signed without the App Group for weeks while
+this check reported OK, because it was comparing the build against the same
+emptied file. The declared set is now required to be non-empty.
 
 Zero third-party dependencies by design (this repo's supply-chain rule): the
 standard library's plistlib only.
@@ -32,15 +27,22 @@ def load(path):
         return plistlib.load(f)
 
 
-def merge(signed_path, declared_path, out_path):
-    merged = load(signed_path)
-    merged.update(load(declared_path))
-    with open(out_path, "wb") as f:
-        plistlib.dump(merged, f)
-
-
 def check(signed_path, declared_path):
-    signed, declared = load(signed_path), load(declared_path)
+    try:
+        declared = load(declared_path)
+    except Exception as exc:  # missing, truncated, not a plist
+        sys.exit(f"cannot read declared entitlements {declared_path}: {exc}")
+
+    # A declared set with no keys makes every comparison below vacuously true.
+    # Treat it as a build-breaking error, not a pass.
+    if not declared:
+        sys.exit(
+            f"declared entitlements {declared_path} are EMPTY — nothing to verify. "
+            "Something overwrote the file (XcodeGen's `entitlements:` key generates "
+            "over it; use CODE_SIGN_ENTITLEMENTS in an xcconfig instead)."
+        )
+
+    signed = load(signed_path)
     missing = []
     for key, value in declared.items():
         if key not in signed:
@@ -54,9 +56,7 @@ def check(signed_path, declared_path):
 
 def main():
     cmd = sys.argv[1] if len(sys.argv) > 1 else ""
-    if cmd == "merge":
-        merge(*sys.argv[2:5])
-    elif cmd == "check":
+    if cmd == "check":
         check(*sys.argv[2:4])
     else:
         sys.exit(__doc__)

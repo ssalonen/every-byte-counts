@@ -20,7 +20,7 @@ All four are symptoms of not having a managed signing store. **`match` removes
 every one of them**: one distribution cert, reused everywhere; profiles synced
 from an encrypted repo; no Admin/cloud-signing role required.
 
-### Theme B — the App Group entitlement gets stripped (fastlane does NOT fix this)
+### Theme B — the App Group entitlement goes missing (**this diagnosis was wrong — see the postmortem**)
 
 | PR | What happened |
 |----|---------------|
@@ -29,10 +29,14 @@ from an encrypted repo; no Admin/cloud-signing role required.
 | #28 | Declare the App Groups capability in the generated project — **did not help** |
 | #29 | Revert that experiment; keep the re-sign |
 
-Xcode 26 strips the App Group while packaging the archive. `build_app` (gym) is a
-wrapper over the same `xcodebuild archive` / `-exportArchive`, so **switching to
-fastlane will not automatically make this go away.** The plan below keeps a
-verify gate and preserves the re-sign as a fallback hook.
+> **This section's premise was false.** It claimed Xcode 26 strips the App Group
+> while packaging the archive, and everything built on that claim — the archive
+> re-sign, the DER-entitlements flag, moving the re-sign after export — was
+> chasing a symptom. Nothing was ever stripped: `xcodegen generate` was
+> **overwriting the checked-in `.entitlements` files with an empty plist** before
+> each build, so there was nothing in them to strip. See
+> [the postmortem](#postmortem-what-was-actually-wrong) below. The text is left
+> in place because the reasoning it caused is what the postmortem explains.
 
 ## Decisions
 
@@ -212,3 +216,80 @@ permanently and the re-sign only as a guarded fallback.
 
 - **Two Apple accounts / no Mac in CI-only setups:** `match` seeding is the one
   step that needs a human with portal access; unavoidable regardless of tooling.
+
+---
+
+## Postmortem: what was actually wrong
+
+**Symptom.** Releases v1.4.2–v1.4.5 shipped to TestFlight and opened to the
+"Storage Unavailable" screen: `containerURL(forSecurityApplicationGroupIdentifier:)`
+returned nil, so `MobileDataService.live` returned nil. CI was green for every one
+of them.
+
+**Root cause.** `project.yml` declared entitlements with XcodeGen's
+`entitlements:` key and no `properties:`:
+
+```yaml
+    entitlements:
+      path: App/EveryByteCounts/EveryByteCounts.entitlements
+```
+
+That key means *"generate this plist"*, not *"point at this file"*. XcodeGen's
+`FileWriter.writePlist` overwrites the file at `path` unless the existing content
+is identical to what it would write — and with no `properties:` what it writes is
+an empty `<dict/>`. Every workflow runs `xcodegen generate` before building, so
+**both `.entitlements` files were empty by the time Xcode or fastlane read them.**
+The App Group was in git and nowhere else.
+
+Xcode then did exactly what it was told: the archive log shows
+`Write Auxiliary File Entitlements.plist`, and it wrote a `.xcent` with no App
+Group because the file it was handed had none. Nothing was ever "stripped".
+
+**Why every guard passed.** All of them compared the build against the same
+emptied file:
+
+- `entitlements.py check` looped `for key, value in declared.items()` over `{}` —
+  zero iterations, nothing reported missing.
+- The "parser-independent backstop" grepped that same empty file for `group\.`,
+  got no matches, and never entered its loop.
+- The re-sign's `merge()` merged an empty dict onto the signature, adding nothing,
+  then verified with the same vacuous check.
+
+The gates didn't fail to catch the bug — they passed *because of* it. Meanwhile the
+embedded provisioning profiles did authorise
+`com.apple.security.application-groups` all along, so `match`, the App IDs, and
+the portal configuration were never at fault.
+
+**Why the pre-fastlane pipeline seemed fine.** It hardcoded the group in the
+workflow and forced it in with PlistBuddy, never reading the `.entitlements`
+files. Commit `f8f5f96` "generalised" that to read the declared file — which
+XcodeGen had already emptied. That commit is where silent breakage began, and
+every fix after it was chasing consequences.
+
+**The fix.** Stop letting a generator write a tracked file. `CODE_SIGN_ENTITLEMENTS`
+now lives in `Config/App.xcconfig` / `Config/Widget.xcconfig`, which XcodeGen only
+references; the `entitlements:` keys are gone. This is the same fix `7cdd513`
+applied to `Info.plist` (`info:` → `INFOPLIST_FILE`) — entitlements just never got
+it. The version moved to `Config/Version.xcconfig` for the same reason: the
+release job used to regex-`sed` `MARKETING_VERSION` into the tracked `project.yml`.
+
+The whole re-sign/DER apparatus is deleted. `verify_declared_entitlements` stays
+and is now a real gate, because `entitlements.py` rejects an empty declared set
+outright.
+
+### Lessons
+
+1. **Generators write only generated artifacts.** If a tool's config points at a
+   tracked file, know whether it *reads* or *generates* it. XcodeGen's `info:` and
+   `entitlements:` keys generate.
+2. **A check whose expectation comes from the same source as the thing being
+   checked is not a check.** Comparing a build against a file the build process
+   can overwrite proves nothing. Assert the expectation is non-empty first.
+3. **`git diff --exit-code` after codegen is the cheapest guard in this repo.** It
+   would have caught this in seconds, in the first CI run. It now runs after every
+   `xcodegen generate`.
+4. **Don't build on an unverified mechanism.** "Xcode strips it" and
+   "exportArchive re-signs from the stripped `.xcent`" were never tested directly;
+   five fixes were layered on top of them.
+5. **A green pipeline that ships a broken artifact is worse than a red one.**
+   Prefer a gate that fails loudly to a workaround that "fixes" things silently.

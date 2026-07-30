@@ -111,6 +111,16 @@ The cost model is stored as **type + params** and resolved through
 The shared logic is a Swift package you can test today; the app + widget are
 assembled into an Xcode project with [XcodeGen](https://github.com/yonaskolb/XcodeGen).
 
+Build settings that a tool or CI has to read live in `Config/*.xcconfig`, not in
+`project.yml`: the version in `Config/Version.xcconfig` (rewritten by the release
+job) and `CODE_SIGN_ENTITLEMENTS` in `Config/App.xcconfig` /
+`Config/Widget.xcconfig`. **Do not move these back into `project.yml`'s
+`entitlements:` / `info:` keys** — those keys make XcodeGen *generate* the file at
+that path, overwriting the checked-in one. That is what silently shipped four
+releases without the App Group; see
+[`docs/FASTLANE-MIGRATION.md`](docs/FASTLANE-MIGRATION.md#postmortem-what-was-actually-wrong).
+CI enforces this with a `git diff --exit-code` check after every `xcodegen generate`.
+
 ```bash
 # 1. Run the Shared Core unit tests (no Xcode needed):
 swift test
@@ -149,7 +159,7 @@ GitHub Actions (`.github/workflows/`), adapted from `ssalonen/unarchiver`:
 | Workflow | What it does |
 |----------|--------------|
 | `ci.yml` | Runs `swift test --enable-code-coverage` on the core, **gates line coverage ≥ 95%**, posts a coverage table on PRs; builds the app + widget (XcodeGen → `xcodebuild`) against the iOS Simulator SDK; on green `main`, auto-computes the next version from **Conventional Commits** and triggers a release. |
-| `release.yml` | Runs **fastlane** `beta`: [`match`](https://docs.fastlane.tools/actions/match/) syncs the distribution cert + profiles from a private signing repo, `gym` archives and signs, the declared entitlements Xcode strips are re-asserted, and the build is uploaded to **TestFlight**. Reusable via `workflow_call`. |
+| `release.yml` | Runs **fastlane** `beta`: [`match`](https://docs.fastlane.tools/actions/match/) syncs the distribution cert + profiles from a private signing repo, `gym` archives, signs and exports the IPA, a gate verifies it carries every declared entitlement (in both the signature and the embedded profile) before anything ships, and the build is uploaded to **TestFlight**. Reusable via `workflow_call`. |
 | `bump-version.yml` | Manual `workflow_dispatch` (patch/minor/major) — the first-release escape hatch. |
 | `security.yml` | CodeQL (Swift, `security-extended`), a supply-chain guard that keeps the core dependency-free, and PR dependency review. |
 

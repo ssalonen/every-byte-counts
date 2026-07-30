@@ -18,10 +18,17 @@ packages:
   MobileDataCore:
     path: .
 
+# Version lives in Config/Version.xcconfig, not here: the release pipeline
+# rewrites it after each release, and an xcconfig can be rewritten wholesale
+# instead of regex-patched. Do NOT re-add MARKETING_VERSION or
+# CURRENT_PROJECT_VERSION below — settings here are written into the generated
+# project and out-rank the xcconfig, so a copy here would silently win.
+configFiles:
+  Debug: Config/Version.xcconfig
+  Release: Config/Version.xcconfig
+
 settings:
   base:
-    MARKETING_VERSION: "1.4.5"
-    CURRENT_PROJECT_VERSION: "1"
     SWIFT_VERSION: "5.9"
     DEVELOPMENT_TEAM: "" # set your Apple Developer team id before signing
 
@@ -31,8 +38,13 @@ targets:
     platform: iOS
     sources:
       - App/EveryByteCounts
-    entitlements:
-      path: App/EveryByteCounts/EveryByteCounts.entitlements
+    # CODE_SIGN_ENTITLEMENTS lives in this xcconfig rather than in an
+    # `entitlements:` key here — that key makes XcodeGen *generate* the plist and,
+    # with no `properties:`, overwrite the checked-in .entitlements file with an
+    # empty dict on every run, silently dropping the App Group from releases.
+    configFiles:
+      Debug: Config/App.xcconfig
+      Release: Config/App.xcconfig
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: fi.mailhub.everybytecounts
@@ -56,8 +68,10 @@ targets:
     platform: iOS
     sources:
       - Widget/EveryByteCountsWidget
-    entitlements:
-      path: Widget/EveryByteCountsWidget/EveryByteCountsWidget.entitlements
+    # Entitlements via xcconfig, same reason as the app target above.
+    configFiles:
+      Debug: Config/Widget.xcconfig
+      Release: Config/Widget.xcconfig
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: fi.mailhub.everybytecounts.widget

@@ -38,6 +38,13 @@ jobs:
       - name: Generate Xcode project
         run: xcodegen generate
 
+      - name: Fail if project generation modified tracked files
+        run: |
+          if ! git diff --exit-code; then
+            echo "::error::\`xcodegen generate\` modified tracked files (see diff above). A project.yml key is generating over a checked-in file instead of referencing it — that is how the App Group entitlement was silently dropped from releases. Point the setting at the file (e.g. CODE_SIGN_ENTITLEMENTS in an xcconfig) instead of declaring a generated plist."
+            exit 1
+          fi
+
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v4
         with:

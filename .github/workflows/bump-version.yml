@@ -10,6 +10,18 @@ on:
         required: true
         type: choice
         options: [patch, minor, major]
+      match_readonly:
+        # This is the reachable form of the MATCH_READONLY hatch the entitlement
+        # verify gate points operators at: if a profile stops authorising a
+        # capability (e.g. App Groups was just associated on the App IDs), run a
+        # release with this set to 'false' so match regenerates the profiles.
+        # Requires a *write* MATCH_REPO_KEY and an API key allowed to manage
+        # profiles. Leave it 'true' otherwise.
+        description: "Let match regenerate provisioning profiles"
+        required: false
+        type: choice
+        options: ['true', 'false']
+        default: 'true'
 
 permissions:
   contents: write
@@ -57,6 +69,7 @@ jobs:
     uses: ./.github/workflows/release.yml
     with:
       tag: ${{ needs.tag.outputs.new_tag }}
+      match_readonly: ${{ inputs.match_readonly }}
     # Called workflows get NO repository secrets unless the caller forwards
     # them; without this the signing steps see only empty strings.
     secrets: inherit
