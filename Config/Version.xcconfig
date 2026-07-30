@@ -9,5 +9,5 @@
 // gym's xcargs (see fastlane/Fastfile); this file is what local and
 // simulator builds use, and what keeps `main` in sync with the last
 // release.
-MARKETING_VERSION = 1.4.5
+MARKETING_VERSION = 1.4.6
 CURRENT_PROJECT_VERSION = 1

@@ -176,7 +176,12 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git remote set-url origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
           git fetch origin main
-          git checkout main
+          # `git fetch` moves origin/main but NOT the local branch, so a plain
+          # `git checkout main` lands on whatever SHA actions/checkout pinned —
+          # stale the moment anything else merges while the release runs. Reset
+          # onto the freshly fetched remote instead, or the commit below is built
+          # on a stale base and the push is rejected as non-fast-forward.
+          git checkout -B main origin/main
           # Rewrite the version xcconfig wholesale rather than regex-patching a
           # tracked template: this repo has already been broken twice by a
           # generator/script editing a checked-in file in place.
@@ -202,7 +207,21 @@ jobs:
             # [skip ci] avoids a needless macOS run; a lone chore commit is
             # non-releasable anyway so it could never trigger another release.
             git commit -m "chore: bump version to ${TAG} [skip ci]"
-            git push origin HEAD:main
+            # Someone can still merge between the fetch above and this push, so
+            # retry onto the new tip rather than failing the release for a race
+            # on a one-line chore commit.
+            for attempt in 1 2 3; do
+              if git push origin HEAD:main; then
+                pushed=1; break
+              fi
+              echo "push rejected (attempt $attempt) — rebasing onto the new origin/main"
+              git fetch origin main
+              git rebase origin/main || { git rebase --abort || true; break; }
+            done
+            if [ "${pushed:-0}" != "1" ]; then
+              echo "::error::Could not push the version bump after 3 attempts. The release itself succeeded (tag ${TAG} is built and uploaded) — only Config/Version.xcconfig on main is stale. Re-run this job or bump it by hand."
+              exit 1
+            fi
           fi
 
       - name: Create GitHub Release
