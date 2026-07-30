@@ -91,7 +91,7 @@ jobs:
 
       # Read-only SSH deploy key so match can `git clone` the private signing repo.
       - name: Load match repo SSH key
-        uses: webfactory/ssh-agent@v0.9.0
+        uses: webfactory/ssh-agent@v0.10.0
         with:
           ssh-private-key: ${{ secrets.MATCH_REPO_KEY }}
 
