@@ -54,7 +54,7 @@ jobs:
       MATCH_READONLY: ${{ inputs.match_readonly == 'false' && 'false' || 'true' }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Get version from tag
         id: version
@@ -142,7 +142,7 @@ jobs:
       VERSION_NUM: ${{ needs.build.outputs.version_num }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
