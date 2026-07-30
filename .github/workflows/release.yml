@@ -12,6 +12,15 @@ on:
         description: 'Tag to release (e.g. v1.0.0)'
         required: true
         type: string
+      match_readonly:
+        # The escape hatch for "App-ID capabilities changed, profiles need
+        # regenerating" — without it the only route is re-seeding from a Mac.
+        # Needs a *write* deploy key in MATCH_REPO_KEY and an API key allowed to
+        # manage profiles; leave it alone for normal releases.
+        description: "Set to 'false' to let match regenerate provisioning profiles"
+        required: false
+        type: string
+        default: 'true'
 
 # Serialize releases: never run two at once (racing TestFlight build numbers or
 # racing version-bump commits to main). cancel-in-progress: false so an in-flight
@@ -40,6 +49,9 @@ jobs:
       APP_STORE_CONNECT_API_KEY_P8: ${{ secrets.APP_STORE_CONNECT_API_KEY_P8 }}
       MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
       MATCH_GIT_URL: ${{ secrets.MATCH_GIT_URL }}
+      # Fail safe: anything other than an explicit 'false' means readonly. A
+      # tag-push run has no inputs at all, so it lands on 'true'.
+      MATCH_READONLY: ${{ inputs.match_readonly == 'false' && 'false' || 'true' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -100,8 +112,19 @@ jobs:
       - name: Generate Xcode project
         run: xcodegen generate
 
-      # Sync signing (match), archive, re-assert declared entitlements Xcode
-      # strips, export, and upload to TestFlight — all in the beta lane.
+      # Must run BEFORE the build: if generation overwrote a tracked
+      # .entitlements file, the archive would be signed without those
+      # capabilities and every downstream check would compare it against the same
+      # emptied file and pass. See docs/FASTLANE-MIGRATION.md.
+      - name: Fail if project generation modified tracked files
+        run: |
+          if ! git diff --exit-code; then
+            echo "::error::\`xcodegen generate\` modified tracked files (see diff above). A project.yml key is generating over a checked-in file instead of referencing it. Point the setting at the file (e.g. CODE_SIGN_ENTITLEMENTS in an xcconfig) instead of declaring a generated plist."
+            exit 1
+          fi
+
+      # Sync signing (match), archive, export, verify the shipped IPA carries
+      # every declared entitlement, and upload to TestFlight — all in the beta lane.
       - name: Build & upload to TestFlight
         run: bundle exec fastlane beta
 
@@ -147,23 +170,38 @@ jobs:
           echo "${CHANGELOG:-"(no changes detected)"}" >> "$GITHUB_ENV"
           echo "EOF" >> "$GITHUB_ENV"
 
-      - name: Commit project.yml version bump
+      - name: Commit version bump
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git remote set-url origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
           git fetch origin main
           git checkout main
-          # GNU sed (ubuntu) — keep project.yml in sync so local builds produce
-          # the right version.
-          sed -i "s/MARKETING_VERSION: \"[^\"]*\"/MARKETING_VERSION: \"${VERSION_NUM}\"/" project.yml
-          git add project.yml
+          # Rewrite the version xcconfig wholesale rather than regex-patching a
+          # tracked template: this repo has already been broken twice by a
+          # generator/script editing a checked-in file in place.
+          cat > Config/Version.xcconfig <<EOF
+          // Marketing/build version for the app and the widget extension.
+          //
+          // Rewritten by .github/workflows/release.yml after each release. Keep
+          // these keys OUT of project.yml's \`settings:\` — settings there land in
+          // the generated project and out-rank this xcconfig, so a copy there
+          // would silently win.
+          //
+          // Release builds get the authoritative version from the git tag via
+          // gym's xcargs (see fastlane/Fastfile); this file is what local and
+          // simulator builds use, and what keeps \`main\` in sync with the last
+          // release.
+          MARKETING_VERSION = ${VERSION_NUM}
+          CURRENT_PROJECT_VERSION = 1
+          EOF
+          git add Config/Version.xcconfig
           if git diff --cached --quiet; then
             echo "No changes to commit"
           else
             # [skip ci] avoids a needless macOS run; a lone chore commit is
             # non-releasable anyway so it could never trigger another release.
-            git commit -m "chore: bump project.yml version to ${TAG} [skip ci]"
+            git commit -m "chore: bump version to ${TAG} [skip ci]"
             git push origin HEAD:main
           fi
 

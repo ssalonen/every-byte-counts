@@ -19,7 +19,10 @@ WIDGET_TARGET = "EveryByteCountsWidgetExtension"
 # (GITHUB_WORKSPACE); locally, the parent of this Fastfile's directory.
 REPO_ROOT = ENV["GITHUB_WORKSPACE"] || File.expand_path("..", __dir__)
 
-# Declared entitlements — the source of truth re-asserted after Xcode packaging.
+# Declared entitlements — each target's source of truth, verified in the built
+# IPA before upload. These are wired into the build as CODE_SIGN_ENTITLEMENTS via
+# Config/*.xcconfig; they are NOT declared with XcodeGen's `entitlements:` key,
+# which would generate over them (see docs/FASTLANE-MIGRATION.md).
 APP_ENTITLEMENTS    = File.join(REPO_ROOT, "App/EveryByteCounts/EveryByteCounts.entitlements")
 WIDGET_ENTITLEMENTS = File.join(REPO_ROOT, "Widget/EveryByteCountsWidget/EveryByteCountsWidget.entitlements")
 ENTITLEMENTS_TOOL   = File.join(REPO_ROOT, "scripts/entitlements.py")
@@ -57,9 +60,11 @@ end
 # MARKETING_VERSION comes from release.yml (the tag); build number from the CI
 # run number.
 def build_signed_ipa(key)
-  # readonly by default. Set MATCH_READONLY=false (needs a *write* deploy key and
-  # an API key allowed to manage profiles) to regenerate profiles from CI after
-  # changing App-ID capabilities, instead of re-seeding from a Mac.
+  # readonly by default. To regenerate profiles from CI after changing App-ID
+  # capabilities (instead of re-seeding from a Mac), run the "Bump version and
+  # make a release" workflow with match_readonly: 'false' — that plumbs
+  # MATCH_READONLY through release.yml to here. Needs a *write* deploy key in
+  # MATCH_REPO_KEY and an API key allowed to manage profiles.
   match(api_key: key, type: "appstore", readonly: ENV["MATCH_READONLY"] != "false")
 
   # Stamp manual signing + the match profiles into the freshly generated project,
@@ -69,31 +74,16 @@ def build_signed_ipa(key)
 
   marketing_version = ENV["MARKETING_VERSION"] || "0.0.1"
   build_number = ENV["GITHUB_RUN_NUMBER"] || "1"
-  archive_path = File.join(REPO_ROOT, "build/EveryByteCounts.xcarchive")
 
-  # 1. Archive only — no IPA yet; we export and then re-sign the IPA ourselves.
+  # Archive and export in one step. Each target's CODE_SIGN_ENTITLEMENTS points at
+  # its checked-in .entitlements file (via Config/*.xcconfig), and match's profiles
+  # authorise those capabilities, so the exported IPA carries them — no post-export
+  # re-signing needed. The gate below is what proves it on every release.
   build_app(
     project: PROJECT,
     scheme: SCHEME,
     configuration: "Release",
     clean: true,
-    skip_package_ipa: true,
-    archive_path: archive_path,
-    xcargs: [
-      "MARKETING_VERSION=#{marketing_version}",
-      "CURRENT_PROJECT_VERSION=#{build_number}",
-      "DEVELOPMENT_TEAM=#{ENV.fetch('APPLE_TEAM_ID')}",
-    ].join(" "),
-  )
-
-  # 2. Export the signed IPA. Xcode 26 strips declared capabilities (App Groups)
-  #    from the .xcent while packaging, and exportArchive re-signs the app from
-  #    that stripped .xcent — so the IPA comes out without the group regardless
-  #    of anything done to the archived binary first (re-signing the archive
-  #    beforehand was silently undone here). We fix it after export instead.
-  build_app(
-    skip_build_archive: true,
-    archive_path: archive_path,
     output_directory: File.join(REPO_ROOT, "build"),
     output_name: "EveryByteCounts.ipa",
     export_method: "app-store",
@@ -107,18 +97,16 @@ def build_signed_ipa(key)
         WIDGET_ID => ENV.fetch("sigh_#{WIDGET_ID}_appstore_profile-name"),
       },
     },
+    xcargs: [
+      "MARKETING_VERSION=#{marketing_version}",
+      "CURRENT_PROJECT_VERSION=#{build_number}",
+      "DEVELOPMENT_TEAM=#{ENV.fetch('APPLE_TEAM_ID')}",
+    ].join(" "),
   )
   ipa = Fastlane::Actions.lane_context[Fastlane::Actions::SharedValues::IPA_OUTPUT_PATH]
 
-  # 3. Re-assert each target's declared entitlements onto the EXPORTED IPA and
-  #    re-sign it in place. This is the LAST signing operation — nothing runs
-  #    after it — so the App Group finally survives into the shipped binary (both
-  #    its XML and DER entitlements). Re-signing the archive didn't work because
-  #    exportArchive re-signs again from Xcode's stripped .xcent.
-  resign_exported_ipa(ipa)
-
-  # 4. Gate: fail before upload if any declared entitlement is missing from the
-  #    shipped signature or its embedded provisioning profile.
+  # Gate: fail before upload if any declared entitlement is missing from the
+  # shipped signature or its embedded provisioning profile.
   verify_declared_entitlements(ipa)
   ipa
 end
@@ -128,15 +116,20 @@ end
 # signature AND the embedded provisioning profile. Raises (failing the lane) via
 # scripts/entitlements.py, which exits non-zero on a missing entry.
 #
-# The two-place check matters: a capability in the signature is necessary but
-# NOT sufficient. At runtime iOS grants an entitlement only if the embedded
+# This gate is the safety net for the whole signing path: if the App Group is
+# missing from the shipped binary, the app opens to StartupErrorView ("Storage
+# Unavailable") because containerURL(forSecurityApplicationGroupIdentifier:)
+# returns nil. Catching it here means a broken build fails the release instead of
+# reaching TestFlight — which is exactly what did NOT happen while the declared
+# files were being emptied by XcodeGen and every comparison here was vacuously
+# true (entitlements.py now rejects an empty declared set outright).
+#
+# The two-place check matters: a capability in the signature is necessary but NOT
+# sufficient. At runtime iOS grants an entitlement only if the embedded
 # provisioning profile also authorises it, so a build can carry the App Group in
-# its signature (what `codesign -d` and the old check saw) yet have
-# containerURL(forSecurityApplicationGroupIdentifier:) return nil on device
-# because the profile doesn't list the group — which crashes the app on launch
-# (fatalError in DashboardModel). match manages profiles but NOT App-ID
-# capabilities, so if App Groups isn't enabled on the App IDs the minted
-# profiles silently omit it. This gate turns that into a build-time failure.
+# its signature yet still get nil on device. match manages profiles but NOT
+# App-ID capabilities, so if App Groups isn't associated on the App IDs the
+# minted profiles silently omit it. This turns that into a build-time failure.
 def verify_declared_entitlements(ipa)
   tool       = ENTITLEMENTS_TOOL
   app_ent    = APP_ENTITLEMENTS
@@ -156,9 +149,9 @@ def verify_declared_entitlements(ipa)
       echo "----- signature entitlements: $(basename "$bundle") -----"
       plutil -p "$ent" 2>/dev/null || cat "$ent"
       python3 "#{tool}" check "$ent" "$declared"
-      # Parser-independent backstop: the plist check alone once reported OK on a
-      # signature that visibly lacked the App Group, so also grep the normalised
-      # dump for every declared group string.
+      # Parser-independent backstop: grep the normalised dump for every declared
+      # group string as well as comparing plists, so a parsing quirk in either
+      # tool can't turn a missing App Group into a pass.
       groups="$(mktemp)"
       grep -oE 'group\\.[A-Za-z0-9._-]+' "$declared" | sort -u > "$groups" || true
       while IFS= read -r grp; do
@@ -197,75 +190,6 @@ def asc_api_key
     is_key_content_base64: false,
     in_house: false, # standard Developer Program, NOT enterprise
   )
-end
-
-# Re-sign the bundles INSIDE the exported IPA with their declared entitlements
-# merged back in, then repackage the IPA in place. This runs after export, so it
-# is the final signing operation — unlike re-signing the archive, which
-# exportArchive overwrites when it re-signs from Xcode 26's stripped .xcent.
-#
-# Widget (nested) is signed before the app (inside-out) so the app's seal
-# captures the re-signed widget. --generate-entitlement-der is load-bearing on
-# Xcode 15+/26: iOS enforces the DER-encoded entitlements at runtime, and without
-# it codesign writes our XML entitlements but regenerates the DER blob from a
-# reduced set — dropping com.apple.security.application-groups. That shipped a
-# binary that passed `codesign -d` yet returned nil from
-# containerURL(forSecurityApplicationGroupIdentifier:) on device (the crash).
-def resign_exported_ipa(ipa)
-  app_ent    = APP_ENTITLEMENTS
-  widget_ent = WIDGET_ENTITLEMENTS
-  tool       = ENTITLEMENTS_TOOL
-  sh(<<~BASH)
-    set -euo pipefail
-    IPA="#{ipa}"
-    TOOL="#{tool}"
-    IDENTITY="Apple Distribution"
-    KCARG=""
-    [ -n "${MATCH_KEYCHAIN_NAME:-}" ] && KCARG="--keychain ${MATCH_KEYCHAIN_NAME}"
-
-    WORK="$(mktemp -d)"
-    unzip -qo "$IPA" -d "$WORK"
-    APP="$(ls -d "$WORK/Payload/"*.app | head -1)"
-
-    resign() {
-      bundle="$1"; declared="$2"
-      [ -f "$declared" ] || { echo "::error::declared entitlements not found: $declared"; exit 1; }
-      signed="$(mktemp)"; merged="$(mktemp)"
-      # Start from what Xcode signed in (identifiers, team-id, get-task-allow,
-      # beta-reports-active) and re-assert the declared capabilities on top.
-      codesign -d --entitlements :- "$bundle" > "$signed" 2>/dev/null
-      plutil -convert xml1 "$signed"
-      python3 "$TOOL" merge "$signed" "$declared" "$merged"
-      echo "entitlements handed to codesign for $(basename "$bundle"):"
-      plutil -p "$merged"
-      codesign --force --sign "$IDENTITY" $KCARG --generate-entitlement-der --entitlements "$merged" "$bundle"
-
-      # Loud, parser-independent guard: every declared App Group MUST be present
-      # in the re-signed binary or the build must not ship.
-      after="$(mktemp)"
-      codesign -d --entitlements :- "$bundle" > "$after" 2>/dev/null
-      plutil -convert xml1 "$after" 2>/dev/null || true
-      groups="$(mktemp)"
-      grep -oE 'group\\.[A-Za-z0-9._-]+' "$declared" | sort -u > "$groups" || true
-      while IFS= read -r grp; do
-        [ -z "$grp" ] && continue
-        grep -q "$grp" "$after" || { echo "::error::$(basename "$bundle"): re-sign did NOT retain App Group '$grp'."; exit 1; }
-      done < "$groups"
-      echo "re-signed exported $(basename "$bundle")"
-    }
-
-    # Inside-out: the widget (nested in PlugIns) before the containing app.
-    for ext in "$APP/PlugIns/"*.appex; do
-      [ -e "$ext" ] && resign "$ext" "#{widget_ent}"
-    done
-    resign "$APP" "#{app_ent}"
-
-    # Repackage the IPA in place. Zip every top-level entry (Payload plus any
-    # SwiftSupport/Symbols gym emitted) so nothing is dropped.
-    rm -f "$IPA"
-    ( cd "$WORK" && zip -qXry "$IPA" $(cd "$WORK" && ls -A) )
-    echo "repackaged $(basename "$IPA")"
-  BASH
 end
 
 def apply_signing(target, profile_name)

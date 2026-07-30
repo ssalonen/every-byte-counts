@@ -1,0 +1,8 @@
+// Build settings for the EveryByteCountsWidgetExtension target.
+// Version settings come from Config/Version.xcconfig, applied project-wide.
+
+// Same App Group as the app target, and the same reason for using a raw build
+// setting rather than XcodeGen's `entitlements:` key — see Config/App.xcconfig.
+//
+// Path is relative to SRCROOT (the repo root, where the .xcodeproj is generated).
+CODE_SIGN_ENTITLEMENTS = Widget/EveryByteCountsWidget/EveryByteCountsWidget.entitlements

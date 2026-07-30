@@ -151,6 +151,19 @@ jobs:
       - name: Generate Xcode project
         run: xcodegen generate
 
+      # Guard against the class of bug that silently shipped releases without the
+      # App Group: XcodeGen's `entitlements:`/`info:` keys GENERATE the plist at
+      # the given path, overwriting the checked-in file (with an empty dict when
+      # no `properties:` are given). A clean tree after generation is the only
+      # cheap, reliable check — .gitignore already excludes the generated
+      # .xcodeproj and build output.
+      - name: Fail if project generation modified tracked files
+        run: |
+          if ! git diff --exit-code; then
+            echo "::error::\`xcodegen generate\` modified tracked files (see diff above). A project.yml key is generating over a checked-in file instead of referencing it. Point the setting at the file (e.g. CODE_SIGN_ENTITLEMENTS in an xcconfig) instead of declaring a generated plist."
+            exit 1
+          fi
+
       - name: Install xcbeautify
         run: brew install xcbeautify
 
