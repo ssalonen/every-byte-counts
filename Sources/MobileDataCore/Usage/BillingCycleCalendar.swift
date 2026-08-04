@@ -41,20 +41,50 @@ public struct BillingCycleCalendar {
         return (start, end)
     }
 
+    /// `cycleBounds(containing:resetDay:)` with the start held at or after
+    /// `notBefore` — the instant the previous cycle ended.
+    ///
+    /// Cycles must never overlap: the same traffic would otherwise be billed to
+    /// two of them. Changing the reset day can move a window back over a cycle
+    /// that has already closed, and clamping here keeps the current cycle to the
+    /// part that is genuinely still open. `notBefore` is ignored when it doesn't
+    /// fall inside the window, so a normal boundary is left exactly as computed.
+    public func cycleBounds(containing date: Date, resetDay: Int, notBefore: Date?) -> (start: Date, end: Date) {
+        var bounds = cycleBounds(containing: date, resetDay: resetDay)
+        if let notBefore, notBefore > bounds.start, notBefore < bounds.end {
+            bounds.start = notBefore
+        }
+        return bounds
+    }
+
     /// Whole days remaining in the cycle containing `date`, counting the current
     /// day as remaining (always at least 1).
     public func daysRemaining(in date: Date, resetDay: Int) -> Int {
-        let (_, end) = cycleBounds(containing: date, resetDay: resetDay)
-        let startOfToday = calendar.startOfDay(for: date)
-        let startOfEnd = calendar.startOfDay(for: end)
-        let days = calendar.dateComponents([.day], from: startOfToday, to: startOfEnd).day ?? 0
-        return max(1, days)
+        daysRemaining(in: date, cycleEnd: cycleBounds(containing: date, resetDay: resetDay).end)
     }
 
     /// Whole days elapsed in the cycle so far, counting the current day (≥ 1).
     public func daysElapsed(in date: Date, resetDay: Int) -> Int {
-        let (start, _) = cycleBounds(containing: date, resetDay: resetDay)
-        let startOfStart = calendar.startOfDay(for: start)
+        daysElapsed(in: date, cycleStart: cycleBounds(containing: date, resetDay: resetDay).start)
+    }
+
+    /// Whole days from `date` to `cycleEnd`, counting the current day (≥ 1).
+    ///
+    /// Takes the boundary rather than a reset day so callers can pass the window
+    /// they are actually reporting — the stored cycle can legitimately differ
+    /// from the one the reset day implies (a cycle that has been re-dated, or
+    /// clamped so it doesn't overlap the previous one), and "days left" must
+    /// describe the same window as the rest of the figures.
+    public func daysRemaining(in date: Date, cycleEnd: Date) -> Int {
+        let startOfToday = calendar.startOfDay(for: date)
+        let startOfEnd = calendar.startOfDay(for: cycleEnd)
+        let days = calendar.dateComponents([.day], from: startOfToday, to: startOfEnd).day ?? 0
+        return max(1, days)
+    }
+
+    /// Whole days from `cycleStart` to `date`, counting the current day (≥ 1).
+    public func daysElapsed(in date: Date, cycleStart: Date) -> Int {
+        let startOfStart = calendar.startOfDay(for: cycleStart)
         let startOfToday = calendar.startOfDay(for: date)
         let days = calendar.dateComponents([.day], from: startOfStart, to: startOfToday).day ?? 0
         return max(1, days + 1)

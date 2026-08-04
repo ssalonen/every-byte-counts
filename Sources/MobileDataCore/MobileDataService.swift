@@ -119,9 +119,13 @@ public final class MobileDataService {
 
     // MARK: - Settings
 
-    public func updatePlan(_ transform: (inout PlanConfig) -> Void) {
+    /// Applies a plan change and immediately brings the open billing cycle back
+    /// in line with it, so a corrected reset day takes effect now rather than
+    /// lurking until the next sample crosses the old boundary.
+    public func updatePlan(now: Date = Date(), _ transform: (inout PlanConfig) -> Void) {
         var state = store.load()
         transform(&state.plan)
         store.save(state)
+        engine.reconcileCycleWindow(now: now)
     }
 }

@@ -96,6 +96,20 @@ public final class SamplingEngine {
         )
     }
 
+    /// Brings the open cycle back in line with the plan's billing window without
+    /// reading the counter. Call this whenever the plan changes: `sample()` would
+    /// do it too, but it needs a counter read and only runs on a foreground or a
+    /// widget refresh, and until then the dashboard would show one window while
+    /// "days left" showed another. Returns whether the cycle moved.
+    @discardableResult
+    public func reconcileCycleWindow(now: Date = Date()) -> Bool {
+        var state = store.load()
+        guard let current = state.currentCycle, now < current.end else { return false }
+        let moved = Self.redateOpenCycle(&state, to: planBounds(for: state, now: now), current: current)
+        if moved { store.save(state) }
+        return moved
+    }
+
     // MARK: - Steps
 
     private func updatedCumulatives(
@@ -114,20 +128,25 @@ public final class SamplingEngine {
         )
     }
 
-    /// Ensures `currentCycle` exists and contains `now`. Closes a finished cycle
-    /// (recording its total) and opens a new one rebased on the current
-    /// cumulative. Returns whether a rollover/open occurred.
+    /// Ensures `currentCycle` exists, matches the plan's billing window and
+    /// contains `now`. Closes a finished cycle (recording its total) and opens a
+    /// new one rebased on the current cumulative. Returns whether a
+    /// rollover/open occurred.
     private func advanceCycleIfNeeded(
         state: inout AppState,
         now: Date,
         cumulativeCellular: DataSize,
         cumulativeWifi: DataSize
     ) -> Bool {
-        let bounds = calendar.cycleBounds(containing: now, resetDay: state.plan.cycleResetDay)
+        let bounds = planBounds(for: state, now: now)
+
+        // Still inside the open cycle: nothing to close, but the plan's reset
+        // day may have moved the window under it — see `redateOpenCycle`.
+        if let current = state.currentCycle, now < current.end {
+            return Self.redateOpenCycle(&state, to: bounds, current: current)
+        }
 
         if let current = state.currentCycle {
-            guard now >= current.end else { return false } // still inside the cycle
-
             // Close the finished cycle. Usage between its end and this sample is
             // attributed to the old cycle (accepted §7 inaccuracy). Any manual
             // calibration is folded into the final total here; the new cycle
@@ -140,12 +159,69 @@ public final class SamplingEngine {
         }
 
         // Open a new cycle rebased here (or the first cycle on a fresh install).
+        // The baseline is the cumulative *now* rather than at the window's start,
+        // to match the total just recorded above: everything up to this instant
+        // has been billed to the cycle that closed, so counting any of it again
+        // here would double it. `planBounds` is re-read because the cycle that
+        // just closed raises the floor the new window may start at.
         state.currentCycle = Cycle(
-            start: bounds.start,
+            start: planBounds(for: state, now: now).start,
             end: bounds.end,
             baselineCumulativeCellular: cumulativeCellular,
             baselineCumulativeWifi: cumulativeWifi
         )
+        return true
+    }
+
+    /// The billing window for `now`, held clear of the last closed cycle so the
+    /// two can't overlap.
+    private func planBounds(for state: AppState, now: Date) -> (start: Date, end: Date) {
+        calendar.cycleBounds(
+            containing: now,
+            resetDay: state.plan.cycleResetDay,
+            notBefore: state.closedCycles.last?.end
+        )
+    }
+
+    /// Moves an open cycle onto `bounds` when the plan's reset day has been
+    /// changed under it. Returns whether anything moved.
+    ///
+    /// Without this the cycle kept its original window until `now` passed the
+    /// *old* boundary, and the rollover then opened a cycle starting weeks
+    /// earlier while rebasing the baseline to the current counter — so usage
+    /// inside the new window but before that instant vanished from the headline
+    /// figure even though the daily and cumulative charts, which go by date
+    /// range, still showed it. Correcting the reset day is a correction to
+    /// *when* the boundary falls, so the cycle is re-dated in place and the
+    /// usage counted so far is kept.
+    private static func redateOpenCycle(
+        _ state: inout AppState,
+        to bounds: (start: Date, end: Date),
+        current: Cycle
+    ) -> Bool {
+        guard bounds.start != current.start || bounds.end != current.end else { return false }
+
+        var moved = current
+        moved.start = bounds.start
+        moved.end = bounds.end
+
+        if bounds.start != current.start {
+            // The window now opens at a different instant, so re-anchor the
+            // baseline to the counter as it stood then. When the snapshot
+            // history doesn't reach back that far the existing baseline is the
+            // best available anchor — keeping it can only under-count slightly,
+            // whereas rebasing to "now" would drop the usage outright.
+            if let anchor = state.cumulatives(asOf: bounds.start) {
+                moved.baselineCumulativeCellular = anchor.cellular
+                moved.baselineCumulativeWifi = anchor.wifi
+            }
+            // A calibration describes the carrier's figure for the *old* window,
+            // so it means nothing against the new one. Dropping it leaves the
+            // measured usage standing; the user can recalibrate.
+            moved.manualAdjustmentCellular = nil
+        }
+
+        state.currentCycle = moved
         return true
     }
 
