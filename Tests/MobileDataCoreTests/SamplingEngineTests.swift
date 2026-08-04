@@ -174,4 +174,100 @@ final class SamplingEngineTests: XCTestCase {
         }
         XCTAssertEqual(store.load().snapshots.count, 5)
     }
+
+    // MARK: - Re-dating an open cycle after a reset-day change
+
+    func testChangingResetDayRedatesTheOpenCycleWithoutClosingIt() {
+        let store = InMemoryDataStore(AppState(plan: PlanConfig(capGB: 20, cycleResetDay: 1)))
+        let reader = MockCounterReader(cellular: 0)
+        let engine = makeEngine(reader, store: store)
+
+        engine.sample(now: TestDates.date(2026, 3, 2, 10))   // cycle 1 Mar … 1 Apr
+        reader.add(cellular: 3 * GB)
+        engine.sample(now: TestDates.date(2026, 3, 8, 10))
+
+        store.save({ var s = store.load(); s.plan.cycleResetDay = 20; return s }())
+        XCTAssertTrue(engine.reconcileCycleWindow(now: TestDates.date(2026, 3, 8, 11)))
+
+        let state = store.load()
+        XCTAssertTrue(state.closedCycles.isEmpty, "moving the boundary does not end a cycle")
+        XCTAssertEqual(state.currentCycle?.start, TestDates.date(2026, 2, 20, 0, 0))
+        XCTAssertEqual(state.currentCycle?.end, TestDates.date(2026, 3, 20, 0, 0))
+        // No snapshot reaches back to 20 Feb, so the baseline stands and the
+        // 3 GB counted so far stays counted rather than being rebased away.
+        XCTAssertEqual(state.currentCycle?.baselineCumulativeCellular, .zero)
+    }
+
+    func testRedatingRebasesOnTheCounterAsItStoodAtTheNewStart() {
+        let store = InMemoryDataStore(AppState(plan: PlanConfig(capGB: 20, cycleResetDay: 1)))
+        let reader = MockCounterReader(cellular: 0)
+        let engine = makeEngine(reader, store: store)
+
+        engine.sample(now: TestDates.date(2026, 3, 1, 10))   // cycle 1 Mar … 1 Apr
+        reader.add(cellular: 2 * GB)
+        engine.sample(now: TestDates.date(2026, 3, 9, 10))   // 2 GB by the 9th
+        reader.add(cellular: 5 * GB)
+        engine.sample(now: TestDates.date(2026, 3, 15, 10))  // 7 GB by the 15th
+
+        // Cycle actually resets on the 10th: usage before then belongs to the
+        // previous cycle, so only the 5 GB since counts.
+        store.save({ var s = store.load(); s.plan.cycleResetDay = 10; return s }())
+        engine.reconcileCycleWindow(now: TestDates.date(2026, 3, 15, 11))
+
+        let state = store.load()
+        XCTAssertEqual(state.currentCycle?.start, TestDates.date(2026, 3, 10, 0, 0))
+        XCTAssertEqual(state.currentCycle?.baselineCumulativeCellular.bytes, 2 * GB)
+    }
+
+    func testRedatingDropsACalibrationTiedToTheOldWindow() {
+        let store = InMemoryDataStore(AppState(plan: PlanConfig(capGB: 20, cycleResetDay: 1)))
+        let engine = makeEngine(MockCounterReader(cellular: 0), store: store)
+        engine.sample(now: TestDates.date(2026, 3, 5, 10))
+
+        var seeded = store.load()
+        seeded.currentCycle?.manualAdjustmentCellular = 4 * Int64(GB)
+        seeded.plan.cycleResetDay = 20
+        store.save(seeded)
+        engine.reconcileCycleWindow(now: TestDates.date(2026, 3, 5, 11))
+
+        XCTAssertNil(store.load().currentCycle?.manualAdjustmentCellular,
+                     "the carrier figure described the old window")
+    }
+
+    func testReconcileIsANoOpWhenTheWindowIsUnchanged() {
+        let store = InMemoryDataStore(AppState(plan: PlanConfig(capGB: 20, cycleResetDay: 1)))
+        let engine = makeEngine(MockCounterReader(cellular: 0), store: store)
+        engine.sample(now: TestDates.date(2026, 3, 5, 10))
+        let before = store.load()
+
+        XCTAssertFalse(engine.reconcileCycleWindow(now: TestDates.date(2026, 3, 5, 11)))
+        XCTAssertEqual(store.load(), before)
+    }
+
+    func testReconcileDoesNothingWithoutAnOpenCycle() {
+        let store = InMemoryDataStore(AppState(plan: PlanConfig(capGB: 20, cycleResetDay: 1)))
+        let engine = makeEngine(MockCounterReader(cellular: 0), store: store)
+        XCTAssertFalse(engine.reconcileCycleWindow(now: TestDates.date(2026, 3, 5, 10)))
+    }
+
+    func testRolloverAfterAResetDayChangeDoesNotOverlapTheClosedCycle() {
+        // The plan changed while the app was closed, so no reconcile ran and the
+        // rollover has to hold the new cycle clear of the one it just closed.
+        let store = InMemoryDataStore(AppState(plan: PlanConfig(capGB: 20, cycleResetDay: 1)))
+        let reader = MockCounterReader(cellular: 0)
+        let engine = makeEngine(reader, store: store)
+
+        engine.sample(now: TestDates.date(2026, 3, 5, 10))   // cycle 1 Mar … 1 Apr
+        reader.add(cellular: 3 * GB)
+        store.save({ var s = store.load(); s.plan.cycleResetDay = 20; return s }())
+        engine.sample(now: TestDates.date(2026, 4, 3, 10))   // past the old boundary
+
+        let state = store.load()
+        XCTAssertEqual(state.closedCycles.count, 1)
+        XCTAssertEqual(state.closedCycles[0].end, TestDates.date(2026, 4, 1, 0, 0))
+        // 20 Mar … 20 Apr would reach back into the closed cycle, so the new one
+        // starts where that ended and still ends on the plan's boundary.
+        XCTAssertEqual(state.currentCycle?.start, TestDates.date(2026, 4, 1, 0, 0))
+        XCTAssertEqual(state.currentCycle?.end, TestDates.date(2026, 4, 20, 0, 0))
+    }
 }

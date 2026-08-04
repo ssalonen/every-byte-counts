@@ -12,25 +12,35 @@ public struct UsageCalculator {
 
     public func summary(for state: AppState, asOf now: Date = Date()) -> UsageSummary {
         let plan = state.plan
-        let bounds: (start: Date, end: Date)
-        if let cycle = state.currentCycle, cycle.contains(now) {
-            bounds = (cycle.start, cycle.end)
-        } else {
-            bounds = calendar.cycleBounds(containing: now, resetDay: plan.cycleResetDay)
-        }
 
         // Used = latest cumulative minus the cycle baseline, plus any manual
         // calibration for this cycle (mid-cycle installs under-count until the
-        // user aligns the figure with the carrier's). If we somehow have no
-        // baseline yet (no sample taken this cycle), usage is zero.
+        // user aligns the figure with the carrier's).
+        let bounds: (start: Date, end: Date)
         let used: DataSize
-        if let cycle = state.currentCycle,
-           let latest = state.latestSnapshot,
-           cycle.contains(now) {
-            let measured = latest.cumulativeCellular.subtractingSaturating(cycle.baselineCumulativeCellular)
+        if let cycle = state.currentCycle, cycle.contains(now) {
+            bounds = (cycle.start, cycle.end)
+            let measured = (state.latestSnapshot?.cumulativeCellular ?? .zero)
+                .subtractingSaturating(cycle.baselineCumulativeCellular)
             used = cycle.calibratedUsage(measured: measured)
         } else {
-            used = .zero
+            // No cycle yet, or the stored one has ended and no sample has rolled
+            // it over. Report the window the plan implies and measure against the
+            // counter as it stood when that window opened: reporting a flat zero
+            // here would claim the cycle is untouched while the daily and
+            // cumulative charts, which go by date range, showed the usage.
+            bounds = calendar.cycleBounds(
+                containing: now,
+                resetDay: plan.cycleResetDay,
+                notBefore: state.closedCycles.last?.end
+            )
+            if let baseline = state.cumulatives(asOf: bounds.start)?.cellular,
+               let latest = state.latestSnapshot {
+                used = latest.cumulativeCellular.subtractingSaturating(baseline)
+            } else {
+                // Nothing sampled in this window — genuinely nothing to report.
+                used = .zero
+            }
         }
 
         let cap = plan.cap
@@ -42,8 +52,10 @@ public struct UsageCalculator {
             cap: cap,
             remaining: remaining,
             fractionUsed: fraction,
-            daysRemaining: calendar.daysRemaining(in: now, resetDay: plan.cycleResetDay),
-            daysElapsed: calendar.daysElapsed(in: now, resetDay: plan.cycleResetDay),
+            // Derived from the window reported above, not from the reset day, so
+            // "days left" always describes the cycle the other figures describe.
+            daysRemaining: calendar.daysRemaining(in: now, cycleEnd: bounds.end),
+            daysElapsed: calendar.daysElapsed(in: now, cycleStart: bounds.start),
             cycleStart: bounds.start,
             cycleEnd: bounds.end
         )

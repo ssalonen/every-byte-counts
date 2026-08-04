@@ -165,6 +165,11 @@ Entities, not schemas:
   that's frequent enough for clean day boundaries (app-launch sampling backstops this).
 - Reboot-detection edge case: usage that spans a reboot between two samples can't be split
   precisely; decide how to attribute it (acceptable minor inaccuracy).
+- Changing the reset day re-dates the *open* cycle in place rather than ending it: the boundary
+  moves, the usage counted so far does not. The baseline is re-anchored to the counter as it stood
+  at the new start when the retained snapshots reach back that far, and a calibration is dropped
+  because the carrier figure it came from described the old window. Cycles are also held from
+  overlapping, so no traffic is ever billed to two of them.
 - Notification permission flow and the minimal background mode (if any) worth enabling.
 
 ---

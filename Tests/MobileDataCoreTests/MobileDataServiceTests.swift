@@ -193,4 +193,69 @@ final class MobileDataServiceTests: XCTestCase {
         let report = service.report(asOf: TestDates.date(2026, 3, 2, 12))
         XCTAssertGreaterThan(report.forecast.remainingDailyBudgetGB, 0)
     }
+
+    // MARK: - Changing the reset day mid-cycle
+
+    /// Regression: correcting the reset day used to leave the open cycle on its
+    /// old window. The next sample past the *old* boundary then closed it and
+    /// opened a cycle starting weeks earlier, rebased on the counter as it stood
+    /// right then — so the dashboard read 0% of the cap used while the daily and
+    /// cumulative charts (which go by date range) still showed every byte.
+    func testChangingResetDayMidCycleKeepsUsageAccountedFor() {
+        let store = InMemoryDataStore(AppState(plan: PlanConfig(capGB: 8, cycleResetDay: 1)))
+        let reader = MockCounterReader(cellular: 0)
+        let service = makeService(reader, store: store)
+
+        // Installed on 30 July with the cycle still configured to reset on the
+        // 1st, so the open cycle is 1 Jul … 1 Aug.
+        service.sample(now: TestDates.date(2026, 7, 30, 9))
+        reader.add(cellular: 450_000_000)
+        service.sample(now: TestDates.date(2026, 7, 31, 9))
+        XCTAssertEqual(store.load().currentCycle?.start, TestDates.date(2026, 7, 1, 0, 0))
+
+        // The carrier actually bills from the 19th, so the user corrects it.
+        service.updatePlan(now: TestDates.date(2026, 7, 31, 10)) { $0.cycleResetDay = 19 }
+
+        // The open cycle moves onto the new window straight away — waiting for
+        // the old boundary is what used to break the accounting.
+        XCTAssertEqual(store.load().currentCycle?.start, TestDates.date(2026, 7, 19, 0, 0))
+        XCTAssertEqual(store.load().currentCycle?.end, TestDates.date(2026, 8, 19, 0, 0))
+
+        // The app is not opened again until several days into August.
+        reader.add(cellular: 1_000_000_000)
+        service.sample(now: TestDates.date(2026, 8, 4, 20))
+
+        let report = service.report(asOf: TestDates.date(2026, 8, 4, 20))
+        // 1 Jul … 1 Aug never was a real cycle for this plan, so nothing closed.
+        XCTAssertTrue(service.cycleHistory().isEmpty)
+        XCTAssertEqual(report.summary.cycleStart, TestDates.date(2026, 7, 19, 0, 0))
+        XCTAssertEqual(report.summary.cycleEnd, TestDates.date(2026, 8, 19, 0, 0))
+        XCTAssertEqual(report.summary.daysRemaining, 15)
+        // Every byte since install falls inside 19 Jul … 19 Aug and is still counted.
+        XCTAssertEqual(report.summary.used.bytes, 1_450_000_000)
+        XCTAssertEqual(report.summary.fractionUsed, 1.45 / 8, accuracy: 1e-9)
+    }
+
+    /// The headline figure and the per-day chart are two views of one cycle, so
+    /// they must never contradict each other: the day-by-day totals the History
+    /// tab draws have to add up to the "used" the ring shows.
+    func testDailyTotalsAddUpToTheHeadlineUsedAfterAResetDayChange() {
+        let store = InMemoryDataStore(AppState(plan: PlanConfig(capGB: 8, cycleResetDay: 1)))
+        let reader = MockCounterReader(cellular: 0)
+        let service = makeService(reader, store: store)
+
+        service.sample(now: TestDates.date(2026, 7, 30, 9))
+        service.updatePlan(now: TestDates.date(2026, 7, 30, 10)) { $0.cycleResetDay = 19 }
+        reader.add(cellular: 200_000_000)
+        service.sample(now: TestDates.date(2026, 7, 31, 9))
+        for day in 1...4 {
+            reader.add(cellular: 250_000_000)
+            service.sample(now: TestDates.date(2026, 8, day, 9))
+        }
+
+        let report = service.report(asOf: TestDates.date(2026, 8, 4, 20))
+        let charted = report.dailyTotals.reduce(0.0) { $0 + $1.cellular.gigabytes }
+        XCTAssertEqual(charted, report.summary.used.gigabytes, accuracy: 1e-6)
+        XCTAssertGreaterThan(report.summary.used.bytes, 0)
+    }
 }

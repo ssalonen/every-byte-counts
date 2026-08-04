@@ -38,4 +38,15 @@ public struct AppState: Equatable, Codable, Sendable {
 
     /// Most recent snapshot, if any.
     public var latestSnapshot: Snapshot? { snapshots.last }
+
+    /// The monotonic cumulative totals as they stood at `date` — i.e. those of
+    /// the most recent snapshot taken at or before it. `nil` when the retained
+    /// snapshot history doesn't reach that far back, in which case the caller
+    /// has to fall back on whatever baseline it already holds rather than
+    /// inventing one (an invented baseline silently loses or duplicates usage).
+    public func cumulatives(asOf date: Date) -> (cellular: DataSize, wifi: DataSize)? {
+        // Snapshots are appended oldest-first, so the last match is the newest.
+        guard let snapshot = snapshots.last(where: { $0.timestamp <= date }) else { return nil }
+        return (snapshot.cumulativeCellular, snapshot.cumulativeWifi)
+    }
 }
