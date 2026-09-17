@@ -116,25 +116,43 @@ and whether the assertions are meaningful (would fail on a plausible bug).
 
 Writing the tests surfaced issues that are **not** just test problems:
 
-### 🔴 High — iOS interface counters are 32-bit and wrap (~every 4 GB)
-`if_data.ifi_ibytes`/`ifi_obytes` are `u_int32_t`. The reader sums them into a
-`UInt64`, but each underlying counter still wraps at 2³². The current
-`RebootAdjuster` cannot distinguish a wrap from a reboot, and on a drop it re-bases
-to the new low value, **under-counting by the pre-wrap remainder**. Worse, summing
-two independently-wrapping 32-bit counters *before* diffing means the sum can fall
-even when neither is a reboot, producing extra pseudo-reboots.
+### ✅ Fixed (was 🔴 High) — iOS interface counters are 32-bit and wrap (~every 4 GB)
+`if_data.ifi_ibytes`/`ifi_obytes` are `u_int32_t`. The reader summed them into a
+`UInt64`, but each underlying counter still wraps at 2³². The original
+`RebootAdjuster` could not distinguish a wrap from a reboot, and on a drop it
+re-based to the new low value, **under-counting by the pre-wrap remainder** — up to
+4 GiB of real usage per wrap, which is exactly the "app says GBs left, the carrier
+says none" mismatch. Summing two independently-wrapping 32-bit counters *before*
+diffing made it worse: the sum could fall with nothing having restarted, producing
+pseudo-reboots.
 
-- **Impact:** for a 20 GB plan you can expect several wraps per cycle; each drops up
-  to one sample-interval's traffic. Frequent sampling (the widget heartbeat) keeps
-  the error small, but if >4 GB passes on one interface between two samples, a whole
-  wrap is missed.
-- **Recommended fix:** track **per-interface** cumulative counters (diff each
-  interface before summing) and, on a detected drop, add `(2³² − previousRaw) +
-  currentRaw` instead of just `currentRaw` when the gap is consistent with a wrap
-  rather than a genuine boot (a boot zeroes *all* interfaces simultaneously).
-- **Test to add when fixed (red first):** previousRaw = 2³²−100 MB, currentRaw =
-  300 MB on one interface only → expected delta 400 MB, `didReboot == false`. This
-  test would **fail today**, which is exactly why it's the right next red.
+**How it was fixed** (`InterfaceCounters`, `RebootAdjuster.deltas(…)`,
+`InterfaceCounterReader`):
+
+- the reader reports **per interface and per direction** (`pdp_ip0.in`,
+  `pdp_ip0.out`, `en0.…`) instead of one summed figure, so each counter is diffed
+  on its own and a falling *sum* no longer means anything;
+- a drop on a counter that is still running is credited as
+  `(2³² − previous) + current` — the pre-wrap bytes are real traffic;
+- the three reasons a counter can fall are now separated rather than guessed at:
+  **reboot** from `kern.boottime` moving (everything restarts), **interface
+  restart** from the kernel interface index changing or the packet counters going
+  backwards (iOS re-creates `pdp_ip0` on airplane-mode/SIM changes — crediting that
+  as a wrap would *invent* 4 GiB), and **wrap** for everything else. A counter
+  already above 2³² can't have wrapped, so it is never credited one.
+
+**Tests:** `CounterWrapTests` (the red-first case below, plus restart-vs-wrap,
+boot-clock jitter, new/disappeared interfaces) and `SamplingEngineWrapTests`
+(traffic crossing a wrap, a wrap entirely inside one sampling gap, a restart that
+must not invent traffic, and the upgrade path from snapshots that predate
+per-interface counters).
+
+- **The red-first case:** previousRaw = 2³²−100 MB, currentRaw = 300 MB on one
+  interface only → delta 400 MB, `didReboot == false`
+  (`testWrappedCounterCreditsTheBytesBeforeTheWrap`).
+- **Still accepted:** traffic between the last sample and a reboot or an interface
+  restart is unrecoverable (§7). Frequent sampling — i.e. keeping the widget on a
+  Home Screen — and mid-cycle calibration are the mitigations.
 
 ### 🟡 Medium — multi-cycle gaps lose intermediate months
 If neither the app nor the widget samples for more than a full cycle, skipped cycles
@@ -178,8 +196,9 @@ Acceptable for an estimate; noted so nobody "fixes" it as a bug later.
 
 ## 5. Recommendations (prioritised)
 
-1. **Fix the 32-bit wrap handling** (finding 🔴) — it's the single biggest threat to
-   the product's core promise of an accurate estimate. Do it test-first.
+1. ~~**Fix the 32-bit wrap handling** (finding 🔴)~~ — **done**: counters are now
+   diffed per interface and direction, with wraps credited and restarts/reboots
+   told apart (see the finding above).
 2. **Add property-based tests** for the sampling engine: random sequences of
    (+traffic / reboot / time-advance) operations, asserting the invariant
    *cumulative is monotonic and equals the sum of all positive deltas* — this would

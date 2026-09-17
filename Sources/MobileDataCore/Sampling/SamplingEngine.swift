@@ -78,7 +78,9 @@ public final class SamplingEngine {
             rawCellular: reading.cellular,
             rawWifi: reading.wifi,
             cumulativeCellular: cumulativeCellular,
-            cumulativeWifi: cumulativeWifi
+            cumulativeWifi: cumulativeWifi,
+            interfaces: reading.interfaces.isEmpty ? nil : reading.interfaces,
+            bootTime: reading.bootTime
         )
         state.snapshots.append(snapshot)
         pruneSnapshots(&state)
@@ -119,6 +121,26 @@ public final class SamplingEngine {
             // First sample ever: start counting from zero (no pre-install usage).
             return (.zero, .zero, false)
         }
+
+        // Preferred path: diff every interface and direction separately, so a
+        // 32-bit counter wrap is added back instead of being mistaken for a
+        // restart and dropped (up to 4 GiB of real usage per wrap).
+        if !reading.interfaces.isEmpty, let previous = last.interfaces, !previous.isEmpty {
+            let delta = RebootAdjuster.deltas(
+                previous: previous,
+                previousBootTime: last.bootTime,
+                current: reading.interfaces,
+                currentBootTime: reading.bootTime
+            )
+            return (
+                last.cumulativeCellular + delta.cellular,
+                last.cumulativeWifi + delta.wifi,
+                delta.didReboot
+            )
+        }
+
+        // Fallback: the stored snapshot predates per-interface counters (first
+        // sample after an upgrade) or the platform can't report them.
         let cell = RebootAdjuster.delta(previousRaw: last.rawCellular, currentRaw: reading.cellular)
         let wifi = RebootAdjuster.delta(previousRaw: last.rawWifi, currentRaw: reading.wifi)
         return (
