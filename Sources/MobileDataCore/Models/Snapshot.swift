@@ -10,6 +10,10 @@ import Foundation
 ///   * `cumulativeCellular` / `cumulativeWifi` — a monotonic running total that
 ///     the sampling engine maintains across reboots. This is what every higher
 ///     level (daily totals, cycle usage, forecasting) is built on.
+///   * `interfaces` / `bootTime` — the same raw read broken out per interface and
+///     direction, plus the boot it belongs to. The next sample diffs against
+///     these so a 32-bit counter wrap is credited rather than dropped; both are
+///     optional so state written before they existed still decodes.
 public struct Snapshot: Equatable, Codable, Sendable, Identifiable {
     public var id: UUID
     public var timestamp: Date
@@ -24,6 +28,16 @@ public struct Snapshot: Equatable, Codable, Sendable, Identifiable {
     /// Reboot-adjusted running total of WiFi bytes since install.
     public var cumulativeWifi: DataSize
 
+    /// Per-interface, per-direction raw counters behind `rawCellular`/`rawWifi`.
+    /// `nil` for snapshots written before this was recorded, or on a platform
+    /// that can't break the read out.
+    public var interfaces: [InterfaceCounters]?
+
+    /// When the device had last booted at `timestamp`, if known. A change means
+    /// every counter restarted; an unchanged one means a counter that fell must
+    /// have wrapped or had its interface re-created.
+    public var bootTime: Date?
+
     /// Extensibility hook (design §6): lets a future roaming meter classify the
     /// delta that *ended* at this snapshot (e.g. "home" vs "roaming") without a
     /// schema migration. Unused by the MVP.
@@ -36,6 +50,8 @@ public struct Snapshot: Equatable, Codable, Sendable, Identifiable {
         rawWifi: DataSize,
         cumulativeCellular: DataSize,
         cumulativeWifi: DataSize,
+        interfaces: [InterfaceCounters]? = nil,
+        bootTime: Date? = nil,
         attribution: String? = nil
     ) {
         self.id = id
@@ -44,6 +60,8 @@ public struct Snapshot: Equatable, Codable, Sendable, Identifiable {
         self.rawWifi = rawWifi
         self.cumulativeCellular = cumulativeCellular
         self.cumulativeWifi = cumulativeWifi
+        self.interfaces = interfaces
+        self.bootTime = bootTime
         self.attribution = attribution
     }
 }

@@ -36,7 +36,10 @@ account** — and presents a calibrated *estimate* of usage.
 ### Known limits (by platform, not by choice)
 
 The interface counters are whole-device and cumulative-since-boot, so: usage is a
-few-percent **estimate** vs. the carrier's billing; it **can't** be broken down
+few-percent **estimate** vs. the carrier's billing (traffic between the last
+sample and a reboot or an interface restart can't be recovered, so keep the
+widget on a Home Screen — it is the sampling heartbeat — and use **mid-cycle
+calibration** to realign with the carrier's figure); it **can't** be broken down
 per-app or separate hotspot/tethering traffic; and history only accumulates
 **from install onward** (the current cycle's *total* can be calibrated to the
 carrier's figure, but per-day bars still start at install). These are permanent
@@ -74,9 +77,15 @@ snapshots** taken at the two reliable moments: **app foreground** and **widget
 timeline refresh**. Both call the same idempotent `SamplingEngine.sample()`,
 which:
 
-1. reads the cellular/WiFi counters (`getifaddrs` -> `if_data`),
-2. detects reboots (a reading *lower* than the last -> counter reset) and keeps a
-   monotonic running total across reboots,
+1. reads the cellular/WiFi counters (`getifaddrs` -> `if_data`), **per interface
+   and per direction**, together with `kern.boottime`,
+2. keeps a monotonic running total by diffing each of those counters separately,
+   so the three different reasons a counter can fall are told apart: a **reboot**
+   (the boot clock moved -> everything restarts from zero), an **interface
+   restart** (iOS re-creates `pdp_ip0` on an airplane-mode/SIM change -> that one
+   counter restarts) and a **32-bit wrap** (`if_data`'s counters are `u_int32_t`
+   and roll over every 4 GiB -> the bytes before the roll-over are real traffic
+   and are added back),
 3. rolls the billing cycle over when due (rebasing on a baseline rather than ever
    zeroing the counter),
 4. appends a snapshot, evaluates threshold alerts, and persists — all in one
@@ -88,7 +97,7 @@ which:
 |------|---------|
 | Units | `Sources/MobileDataCore/Models/DataSize.swift` |
 | Entities | `Models/PlanConfig`, `Snapshot`, `DailyTotal`, `Cycle`, `AlertState` |
-| Counter reader | `Counter/InterfaceCounterReader.swift` (Darwin), `CounterReading.swift` |
+| Counter reader | `Counter/InterfaceCounterReader.swift` (Darwin), `CounterReading.swift`, `InterfaceCounters.swift` |
 | Sampling + reboot | `Sampling/SamplingEngine.swift`, `RebootAdjuster.swift` |
 | Persistence | `Persistence/DataStore.swift`, `AppState.swift` |
 | Cycle/usage math | `Usage/BillingCycleCalendar.swift`, `DailyAggregator.swift`, `UsageCalculator.swift` |
@@ -143,12 +152,13 @@ reboot detection, billing-cycle boundaries (incl. short months), daily delta
 splitting across midnight, recency-weighted forecasting, the cost strategies,
 alert dedup/reset, persistence round-trips, and full sampling-engine scenarios
 (first sample, deltas, reboot mid-cycle, cycle rollover, multi-cycle gaps, alert
-firing, pruning) — all driven by a mock counter reader, so they run on any Swift
-toolchain.
+firing, pruning), plus the counter-fall trio — 32-bit wrap, interface restart and
+reboot — asserted both on the adjuster and end to end through the engine. All of
+it is driven by mock counter readers, so it runs on any Swift toolchain.
 
 A lead-QE review of *whether those tests assert the right things* — plus the
 substantive correctness findings it surfaced (notably the iOS 32-bit counter
-wrap) — is in [`docs/TEST-ASSESSMENT.md`](docs/TEST-ASSESSMENT.md).
+wrap, since fixed) — is in [`docs/TEST-ASSESSMENT.md`](docs/TEST-ASSESSMENT.md).
 
 ---
 

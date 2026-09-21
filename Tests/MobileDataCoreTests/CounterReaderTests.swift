@@ -21,6 +21,23 @@ final class CounterReaderTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(reading.wifi.bytes, 0)
     }
 
+    // The per-interface break-out is what lets the engine tell a 32-bit wrap
+    // from a restarted counter, so the adapter has to actually populate it.
+    func testInterfaceReaderReportsPerInterfaceCountersAndABootClock() throws {
+        let reading = try InterfaceCounterReader().read()
+
+        XCTAssertNotNil(reading.bootTime, "kern.boottime is always readable on Darwin")
+        for interface in reading.interfaces {
+            XCTAssertNotEqual(interface.generation, 0, "\(interface.name) needs an interface index")
+            XCTAssertEqual(interface.totalBytes, interface.inBytes + interface.outBytes)
+        }
+        // The headline totals must agree with the per-interface break-out.
+        let cellular = reading.interfaces.filter { $0.kind == .cellular }.reduce(UInt64(0)) { $0 + $1.totalBytes }
+        let wifi = reading.interfaces.filter { $0.kind == .wifi }.reduce(UInt64(0)) { $0 + $1.totalBytes }
+        XCTAssertEqual(reading.cellular.bytes, cellular)
+        XCTAssertEqual(reading.wifi.bytes, wifi)
+    }
+
     func testInterfaceIdentifiersAreCorrectForIOS() {
         XCTAssertEqual(InterfaceCounterReader.cellularPrefix, "pdp_ip")
         XCTAssertEqual(InterfaceCounterReader.wifiInterface, "en0")
